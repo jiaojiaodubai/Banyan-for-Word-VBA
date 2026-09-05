@@ -1,0 +1,19 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui" onLoad="OnRibbonLoad">
+    <ribbon startFromScratch="false">
+        <tabs>
+            <tab id="tabBanyan" label="Banyan">
+                <group id="grpBanyanMain" label="Banyan">
+                    <button id="btnCitation"     getLabel="OnGetLabel" onAction="OnAction" image="format-quote-open"    getVisible="OnGetVisible" size="large"/>
+                    <button id="btnChapterBreak" getLabel="OnGetLabel" onAction="OnAction" image="format-page-break"    getVisible="OnGetVisible" size="large"/>
+                    <button id="btnBibliography" getLabel="OnGetLabel" onAction="OnAction" image="format-list-numbered" getVisible="OnGetVisible" size="large"/>
+                    <button id="btnCitationPane" getLabel="OnGetLabel" onAction="OnAction" image="dock-right"           getVisible="OnGetVisible" size="large"/>
+                    <button id="btnRefresh"      getLabel="OnGetLabel" onAction="OnAction" image="autorenew"            getVisible="OnGetVisible" size="large"/>
+                    <button id="btnConvert"      getLabel="OnGetLabel" onAction="OnAction" image="code-json"            getVisible="OnGetVisible" size="large"/>
+                    <button id="btnUnlink"       getLabel="OnGetLabel" onAction="OnAction" image="link-variant-off"     getVisible="OnGetVisible" size="large"/>
+                    <button id="btnTest"         getLabel="OnGetLabel" onAction="OnAction" image="btnTest"              getVisible="OnGetVisible" size="large"/>
+                    <button id="btnSettings"     getLabel="OnGetLabel" onAction="OnAction" image="cog-outline"          getVisible="OnGetVisible" size="large"/>
+                </group>
+            </tab>
+        </tabs>
+    </ribbon>
+</customUI>

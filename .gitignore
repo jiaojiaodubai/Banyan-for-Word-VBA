@@ -1,0 +1,5 @@
+# Word owner/lock files (created next to an open document)
+~$*
+
+# Windows/Office temp files
+*.tmp
