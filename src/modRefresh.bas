@@ -25,6 +25,10 @@ Public Sub RefreshAction()
     Set originalRange = Selection.Range.Duplicate
     On Error GoTo ErrHandler
 
+    Dim batchStarted As Boolean
+    FieldBeginBatchUpdate
+    batchStarted = True
+
     ProgressOpen RText("progressReason", "Refreshing Banyan fields...")
 
     Dim pref As Object
@@ -43,6 +47,7 @@ Public Sub RefreshAction()
 CleanUp:
     ProgressClose
     RestoreRefreshSelection originalRange
+    If batchStarted Then FieldEndBatchUpdate
     Exit Sub
 
 ErrHandler:
@@ -58,6 +63,7 @@ ErrHandler:
 
     ProgressClose
     RestoreRefreshSelection originalRange
+    If batchStarted Then FieldEndBatchUpdate
     DiagnosticShowError RText("dialogTitle", "Banyan Refresh"), _
                         Replace(RText("error", "Failed to refresh Banyan fields: {message}"), _
                                 "{message}", errDescription), _
@@ -73,11 +79,15 @@ Public Function RefreshInRange(ByVal targetRange As Range, _
 
     If targetRange Is Nothing Then Exit Function
 
+    Dim batchStarted As Boolean
+    FieldBeginBatchUpdate
+    batchStarted = True
+
     Dim pref As Object
     Set pref = PreferenceEnsure()
     If pref Is Nothing Then
         RefreshLogWarn "No style found, stopping refresh."
-        Exit Function
+        GoTo CleanUp
     End If
 
     Dim syncItems As Boolean
@@ -96,10 +106,15 @@ Public Function RefreshInRange(ByVal targetRange As Range, _
         Case "note-citation"
             RefreshInRange = RefreshNoteRange(targetRange, pref, syncItems)
     End Select
+    GoTo CleanUp
+
+CleanUp:
+    If batchStarted Then FieldEndBatchUpdate
     Exit Function
 
 ErrHandler:
     DiagnosticsReraiseIfDev "modRefresh.RefreshInRange"
+    If batchStarted Then FieldEndBatchUpdate
     RefreshInRange = False
 End Function
 
@@ -108,6 +123,10 @@ Public Sub RefreshAll(Optional ByVal syncItemsOverride As Variant)
 
     Dim originalRange As Range
     Set originalRange = Selection.Range.Duplicate
+
+    Dim batchStarted As Boolean
+    FieldBeginBatchUpdate
+    batchStarted = True
 
     Dim prefs As Object
     Set prefs = PreferenceEnsure()
@@ -167,6 +186,7 @@ Public Sub RefreshAll(Optional ByVal syncItemsOverride As Variant)
 
 CleanUp:
     RestoreRefreshSelection originalRange
+    If batchStarted Then FieldEndBatchUpdate
 End Sub
 
 Public Function RefreshForStyleChange(ByVal previousStyle As Object, ByVal nextStyle As Object) As Boolean
@@ -178,6 +198,10 @@ Public Function RefreshForStyleChange(ByVal previousStyle As Object, ByVal nextS
     On Error Resume Next
     Set originalRange = Selection.Range.Duplicate
     On Error GoTo ErrHandler
+
+    Dim batchStarted As Boolean
+    FieldBeginBatchUpdate
+    batchStarted = True
 
     ProgressOpen RText("progressReason", "Refreshing Banyan fields...")
 
@@ -202,12 +226,14 @@ Public Function RefreshForStyleChange(ByVal previousStyle As Object, ByVal nextS
 CleanUp:
     ProgressClose
     RestoreRefreshSelection originalRange
+    If batchStarted Then FieldEndBatchUpdate
     Exit Function
 
 ErrHandler:
     DiagnosticsReraiseIfDev "modRefresh.RefreshForStyleChange"
     ProgressClose
     RestoreRefreshSelection originalRange
+    If batchStarted Then FieldEndBatchUpdate
     RefreshForStyleChange = False
 End Function
 
@@ -300,6 +326,10 @@ Private Function RefreshIntextRange(ByVal targetRange As Range, _
     Dim requestPairs As Collection
     Set requestPairs = New Collection
 
+    ' Keep the initial field/data objects for this refresh call only.
+    Dim fieldSnapshot As Object
+    Set fieldSnapshot = BuildCitationFieldSnapshot(pairs)
+
     Dim fd As Variant
     For Each fd In pairs
         Dim data As Object
@@ -310,33 +340,67 @@ Private Function RefreshIntextRange(ByVal targetRange As Range, _
         Dim context As Object
         Set context = BuildCitationContext(fld, data)
         contexts.Add context
-        requestPairs.Add MakeFieldContextPair(fld, context)
+        requestPairs.Add MakeFieldContextPair(fld, context, data)
     Next fd
 
     Dim respond As Object
     Set respond = RequestRefresh(pref("style"), contexts, syncItems)
     If respond Is Nothing Then
         RefreshLogWarn "Could not get response from /refresh, skipping this chapter."
+        Set fieldSnapshot = Nothing
         Exit Function
     End If
+
+    Dim responseIndex As Object
+    Set responseIndex = BuildCitationResponseIndex(respond("citations"))
 
     Dim didUpdateCitation As Boolean
     Dim pair As Variant
     For Each pair In requestPairs
+        Dim currentContent As Object
+        Dim snapshotPair As Collection
+        Set snapshotPair = FindCitationSnapshot(fieldSnapshot, pair)
+        If snapshotPair Is Nothing Then
+            Set currentContent = DictKeyObject(pair("data"), "content")
+        Else
+            Set currentContent = snapshotPair("content")
+        End If
         Dim updatedData As Object
-        Set updatedData = FindCitationById(respond("citations"), DictKeyString(pair("context"), "id"))
+        Set updatedData = FindCitationById(responseIndex, DictKeyString(pair("context"), "id"))
         If updatedData Is Nothing Then
             RefreshLogWarn "No updated data found for citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
         ElseIf Not FieldIsIntextCitation(updatedData) Then
             RefreshLogWarn "Updated data for citation with id " & DictKeyString(pair("context"), "id") & " is not a valid in-text citation, skipping."
         Else
-            FieldWriteData pair("field"), updatedData
-            FieldRenderStyledField pair("field"), updatedData("content")
-            didUpdateCitation = True
+            Dim contentChanged As Boolean
+            Dim updatedContent As Object
+            Set updatedContent = DictKeyObject(updatedData, "content")
+            contentChanged = Not FieldRichTextEquals(currentContent, updatedContent)
+            Dim targetField As Field
+            If snapshotPair Is Nothing Then
+                Set targetField = pair("field")
+            Else
+                Set targetField = snapshotPair("field")
+            End If
+
+            ' Source is authoritative response data but does not itself decide
+            ' the Word result. Always persist it; render only when content differs.
+            If FieldWriteData(targetField, updatedData) Then
+                didUpdateCitation = True
+            Else
+                RefreshLogWarn "Failed to write updated data for citation with id " & DictKeyString(pair("context"), "id") & ", skipping render."
+                GoTo NextIntextCitation
+            End If
+            If contentChanged Then
+                FieldRenderStyledFieldWithData targetField, updatedData, DictKeyObject(updatedData, "content")
+            End If
         End If
+NextIntextCitation:
     Next pair
 
     RefreshIntextRange = (didUpdateCitation Or RefreshBibliographyInRange(targetRange, respond, pref))
+    Set responseIndex = Nothing
+    Set fieldSnapshot = Nothing
 End Function
 
 
@@ -359,6 +423,11 @@ Private Function RefreshNoteRange(ByVal targetRange As Range, _
     Dim requestPairs As Collection
     Set requestPairs = New Collection
 
+    ' Rebuilding notes changes live ranges; retain the initial field/data
+    ' objects only for this refresh call.
+    Dim fieldSnapshot As Object
+    Set fieldSnapshot = BuildCitationFieldSnapshot(pairs)
+
     Dim fd As Variant
     For Each fd In pairs
         Dim data As Object
@@ -369,15 +438,19 @@ Private Function RefreshNoteRange(ByVal targetRange As Range, _
         Dim context As Object
         Set context = BuildCitationContext(fld, data)
         contexts.Add context
-        requestPairs.Add MakeNoteContextPair(fd("note"), fld, context)
+        requestPairs.Add MakeNoteContextPair(fd("note"), fld, context, data)
     Next fd
 
     Dim respond As Object
     Set respond = RequestRefresh(pref("style"), contexts, syncItems)
     If respond Is Nothing Then
         RefreshLogWarn "Could not get response from /refresh, skipping this chapter."
+        Set fieldSnapshot = Nothing
         Exit Function
     End If
+
+    Dim responseIndex As Object
+    Set responseIndex = BuildCitationResponseIndex(respond("citations"))
 
     Dim didUpdateCitation As Boolean
     Dim i As Long
@@ -386,28 +459,61 @@ Private Function RefreshNoteRange(ByVal targetRange As Range, _
         Set pair = requestPairs(i)
 
         Dim updatedData As Object
-        Set updatedData = FindCitationById(respond("citations"), DictKeyString(pair("context"), "id"))
+        Set updatedData = FindCitationById(responseIndex, DictKeyString(pair("context"), "id"))
         If updatedData Is Nothing Then
             RefreshLogWarn "No updated data found for citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
         ElseIf Not FieldIsNoteCitation(updatedData) Then
             RefreshLogWarn "Updated data for citation with id " & DictKeyString(pair("context"), "id") & " is not a valid note citation, skipping."
         Else
-            ' Rebuild the footnote in place. VBA owns the custom footnote
-            ' Reference (e.g. "[1]"), so the footnote is re-created to refresh
-            ' the reference mark/number. The rebuild caches the footnote body
-            ' first and replaces only the citation field, preserving any
-            ' user-typed content around it.
-            Dim rebuilt As Collection
-            Set rebuilt = FieldRebuildNoteCitationAtRange(pair("note"), pair("field"), updatedData)
-            If rebuilt Is Nothing Then
-                RefreshLogWarn "Failed to rebuild note citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
+            Dim currentContent As Object
+            Dim currentReference As Object
+            Dim snapshotPair As Collection
+            Set snapshotPair = FindCitationSnapshot(fieldSnapshot, pair)
+            If snapshotPair Is Nothing Then
+                Set currentContent = DictKeyObject(pair("data"), "content")
+                Set currentReference = DictKeyObject(pair("data"), "reference")
             Else
+                Set currentContent = snapshotPair("content")
+                Set currentReference = snapshotPair("reference")
+            End If
+
+            Dim targetNote As Footnote
+            Dim targetField As Field
+            Set targetNote = pair("note")
+            Set targetField = pair("field")
+            If Not snapshotPair Is Nothing Then
+                Set targetNote = snapshotPair("note")
+                Set targetField = snapshotPair("field")
+            End If
+
+            Dim presentationChanged As Boolean
+            presentationChanged = Not FieldRichTextEquals(currentContent, DictKeyObject(updatedData, "content"))
+            If Not presentationChanged Then
+                presentationChanged = Not FieldRichTextEquals(currentReference, DictKeyObject(updatedData, "reference"))
+            End If
+            If presentationChanged Then
+                ' Content changes require a clean field replacement; reference
+                ' changes additionally require footnote recreation.
+                Dim rebuilt As Collection
+                Set rebuilt = FieldRebuildNoteCitationAtRange(targetNote, targetField, updatedData)
+                If rebuilt Is Nothing Then
+                    RefreshLogWarn "Failed to rebuild note citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
+                Else
+                    didUpdateCitation = True
+                End If
+            ElseIf FieldWriteData(targetField, updatedData) Then
+                ' A source-only change is persisted without touching the field
+                ' result or footnote structure.
                 didUpdateCitation = True
+            Else
+                RefreshLogWarn "Failed to write updated data for note citation with id " & DictKeyString(pair("context"), "id") & "."
             End If
         End If
     Next i
 
     RefreshNoteRange = (didUpdateCitation Or RefreshBibliographyInRange(targetRange, respond, pref))
+    Set responseIndex = Nothing
+    Set fieldSnapshot = Nothing
 End Function
 
 
@@ -437,6 +543,17 @@ Private Function RefreshBibliographyInRange(ByVal targetRange As Range, _
     Next line
 
     If lines.Count = 0 Then Exit Function
+
+    Dim contentChanged As Boolean
+    Dim metadataChanged As Boolean
+    contentChanged = BibliographyContentChanged(bibliographyFields, lines, pref, metadataChanged)
+    If Not contentChanged Then
+        If metadataChanged Then
+            UpdateBibliographyMetadata bibliographyFields, lines
+            RefreshBibliographyInRange = True
+        End If
+        Exit Function
+    End If
 
     Dim firstField As Field
     Set firstField = bibliographyFields(1)
@@ -489,6 +606,102 @@ ErrHandler:
     RefreshBibliographyInRange = False
 End Function
 
+Private Function BibliographyContentChanged(ByVal fields As Collection, _
+                                            ByVal lines As Collection, _
+                                            ByVal pref As Object, _
+                                            ByRef metadataChanged As Boolean) As Boolean
+    On Error GoTo ErrHandler
+    If fields.Count <> lines.Count Then
+        BibliographyContentChanged = True
+        Exit Function
+    End If
+
+    Dim i As Long
+    Dim currentData As Object
+    Dim nextData As Object
+    For i = 1 To lines.Count
+        Set currentData = FieldReadData(fields(i))
+        Set nextData = lines(i)
+        If currentData Is Nothing Then
+            BibliographyContentChanged = True
+            Exit Function
+        End If
+        If Not FieldContentEquals(currentData, nextData) Then
+            BibliographyContentChanged = True
+            Exit Function
+        End If
+        If Not BibliographyFieldIdentityEquals(currentData, nextData) Then
+            BibliographyContentChanged = True
+            Exit Function
+        End If
+        If Not BibliographyStyleEquals(fields(i), nextData, pref) Then
+            BibliographyContentChanged = True
+            Exit Function
+        End If
+        If Not FieldDataEquals(currentData, nextData) Then
+            metadataChanged = True
+        End If
+    Next i
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.BibliographyContentChanged"
+    BibliographyContentChanged = True
+End Function
+
+Private Function BibliographyStyleEquals(ByVal fld As Field, _
+                                         ByVal data As Object, _
+                                         ByVal pref As Object) As Boolean
+    On Error GoTo ErrHandler
+
+    Dim expectedStyle As String
+    If FieldIsBibliographyTitle(data) Then
+        expectedStyle = DictKeyString(pref, "bibliographyTitleStyle")
+    Else
+        expectedStyle = DictKeyString(pref, "bibliographyEntryStyle")
+    End If
+    If Len(expectedStyle) = 0 Then Exit Function
+
+    BibliographyStyleEquals = (fld.Result.Style.NameLocal = expectedStyle)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.BibliographyStyleEquals"
+    BibliographyStyleEquals = False
+End Function
+
+Private Function BibliographyFieldIdentityEquals(ByVal currentData As Object, _
+                                                 ByVal nextData As Object) As Boolean
+    If FieldIsBibliographyTitle(currentData) And FieldIsBibliographyTitle(nextData) Then
+        BibliographyFieldIdentityEquals = True
+    ElseIf FieldIsBibliographyEntry(currentData) And FieldIsBibliographyEntry(nextData) Then
+        BibliographyFieldIdentityEquals = (DictKeyString(currentData, "id") = DictKeyString(nextData, "id"))
+    End If
+End Function
+
+Private Sub UpdateBibliographyMetadata(ByVal fields As Collection, _
+                                       ByVal lines As Collection)
+    On Error GoTo ErrHandler
+
+    Dim i As Long
+    Dim currentData As Object
+    Dim nextData As Object
+    For i = 1 To lines.Count
+        Set currentData = FieldReadData(fields(i))
+        Set nextData = lines(i)
+        If Not FieldDataEquals(currentData, nextData) Then
+            FieldWriteData fields(i), nextData
+            If FieldIsBibliographyEntry(nextData) Then
+                FieldAddBookmarkToField fields(i), FieldGetBibliographyBookmarkName(DictKeyString(nextData, "id"))
+            End If
+        End If
+    Next i
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.UpdateBibliographyMetadata"
+End Sub
+
 Private Function DeleteExistingBibliography(ByVal targetRange As Range) As Boolean
     On Error GoTo ErrHandler
 
@@ -525,11 +738,13 @@ Private Function CollectBibliographyFieldsInRange(ByVal targetRange As Range) As
     Dim data As Object
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
+            If Not FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then GoTo NextBibliographyField
             Set data = FieldReadData(fld)
             If FieldIsBibliographyTitle(data) Or FieldIsBibliographyEntry(data) Then
                 result.Add fld
             End If
         End If
+NextBibliographyField:
     Next fld
 
     Set CollectBibliographyFieldsInRange = result
@@ -616,20 +831,11 @@ ErrHandler:
     FieldPageNumber = 0
 End Function
 
-Private Function FindCitationById(ByVal citations As Collection, ByVal citationId As String) As Object
+Private Function FindCitationById(ByVal citationIndex As Object, ByVal citationId As String) As Object
     On Error GoTo ErrHandler
 
-    Dim item As Variant
-    For Each item In citations
-        If IsDictionaryRecord(item) Then
-            If HasDictionaryKey(item, "id") Then
-                If DictKeyString(item, "id") = citationId Then
-                    Set FindCitationById = item
-                    Exit Function
-                End If
-            End If
-        End If
-    Next item
+    If citationIndex Is Nothing Then Exit Function
+    If citationIndex.Exists(citationId) Then Set FindCitationById = citationIndex(citationId)
     Exit Function
 
 ErrHandler:
@@ -637,22 +843,90 @@ ErrHandler:
     Set FindCitationById = Nothing
 End Function
 
-Private Function MakeFieldContextPair(ByVal fld As Field, ByVal context As Object) As Collection
+Private Function BuildCitationResponseIndex(ByVal citations As Collection) As Object
+    On Error GoTo ErrHandler
+
+    Dim result As Object
+    Set result = New Dictionary
+
+    Dim item As Variant
+    For Each item In citations
+        If IsDictionaryRecord(item) Then
+            If HasDictionaryKey(item, "id") Then
+                Dim citationId As String
+                citationId = DictKeyString(item, "id")
+                If Len(citationId) > 0 Then Set result(citationId) = item
+            End If
+        End If
+    Next item
+
+    Set BuildCitationResponseIndex = result
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.BuildCitationResponseIndex"
+    Set BuildCitationResponseIndex = Nothing
+End Function
+
+Private Function BuildCitationFieldSnapshot(ByVal pairs As Collection) As Object
+    On Error GoTo ErrHandler
+
+    Dim result As Object
+    Set result = New Dictionary
+
+    Dim pair As Variant
+    For Each pair In pairs
+        Dim dataId As String
+        dataId = DictKeyString(pair("data"), "id")
+        If Len(dataId) > 0 Then Set result(dataId) = pair
+    Next pair
+
+    Set BuildCitationFieldSnapshot = result
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.BuildCitationFieldSnapshot"
+    Set BuildCitationFieldSnapshot = Nothing
+End Function
+
+Private Function FindCitationSnapshot(ByVal snapshot As Object, _
+                                      ByVal pair As Collection) As Collection
+    On Error GoTo ErrHandler
+    If snapshot Is Nothing Then Exit Function
+
+    Dim citationId As String
+    citationId = DictKeyString(pair("context"), "id")
+    If Len(citationId) > 0 Then
+        If snapshot.Exists(citationId) Then Set FindCitationSnapshot = snapshot(citationId)
+    End If
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.FindCitationSnapshot"
+    Set FindCitationSnapshot = Nothing
+End Function
+
+Private Function MakeFieldContextPair(ByVal fld As Field, _
+                                      ByVal context As Object, _
+                                      ByVal data As Object) As Collection
     Dim result As Collection
     Set result = New Collection
     result.Add fld, "field"
     result.Add context, "context"
+    result.Add data, "data"
     Set MakeFieldContextPair = result
 End Function
 
 Private Function MakeNoteContextPair(ByVal note As Footnote, _
                                      ByVal fld As Field, _
-                                     ByVal context As Object) As Collection
+                                     ByVal context As Object, _
+                                     ByVal data As Object) As Collection
     Dim result As Collection
     Set result = New Collection
     result.Add note, "note"
     result.Add fld, "field"
     result.Add context, "context"
+    result.Add data, "data"
     Set MakeNoteContextPair = result
 End Function
 

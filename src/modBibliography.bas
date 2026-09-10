@@ -52,6 +52,9 @@ Public Sub BibliographyAction()
         Exit Sub
     End If
 
+    Dim batchStarted As Boolean
+    FieldBeginBatchUpdate
+    batchStarted = True
     ProgressOpen BText("progressReason", "Processing bibliography...")
     ' NOTE: `mode` is a VBA Collection (see GetActionMode/MakeAddMode/
     ' MakeEditMode), NOT a Dictionary - read it with Collection key syntax.
@@ -63,11 +66,13 @@ Public Sub BibliographyAction()
         EditBibliographyEntry mode("field"), pref
     End If
     ProgressClose
+    If batchStarted Then FieldEndBatchUpdate
     Exit Sub
 
 ErrHandler:
     DiagnosticsReraiseIfDev "modBibliography.BibliographyAction"
     ProgressClose
+    If batchStarted Then FieldEndBatchUpdate
     DiagnosticShowError BText("dialogTitle", "Banyan Bibliography"), _
                         Replace(BText("error", "An error occurred while handling bibliography: {message}"), _
                                 "{message}", Err.Description), _
@@ -277,11 +282,13 @@ Private Function CollectBibliographyFieldsInRange(ByVal targetRange As Range) As
     Dim data As Object
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
+            If Not FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then GoTo NextBibliographyField
             Set data = FieldReadData(fld)
             If FieldIsBibliographyTitle(data) Or FieldIsBibliographyEntry(data) Then
                 result.Add fld
             End If
         End If
+NextBibliographyField:
     Next fld
 
     Set CollectBibliographyFieldsInRange = result
@@ -384,9 +391,24 @@ Private Sub EditBibliographyEntry(ByVal fld As Field, ByVal pref As Object)
         Exit Sub
     End If
 
-    FieldWriteData fld, response("line")
-    FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, DictKeyObject(DictKeyObject(response, "line"), "content")
-    FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(DictKeyObject(response, "line"), "id"))
+    Dim updatedLine As Object
+    Set updatedLine = response("line")
+    Dim contentChanged As Boolean
+    contentChanged = Not FieldContentEquals(currentLine, updatedLine)
+    Dim dataChanged As Boolean
+    If contentChanged Then
+        dataChanged = True
+    Else
+        dataChanged = Not FieldDataEquals(currentLine, updatedLine)
+    End If
+    If dataChanged Then FieldWriteData fld, updatedLine
+
+    If contentChanged Then
+        FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, DictKeyObject(updatedLine, "content")
+    End If
+    If dataChanged Then
+        FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(updatedLine, "id"))
+    End If
 
     SaveReturnedExtraSource pref, response
 End Sub

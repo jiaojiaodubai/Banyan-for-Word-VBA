@@ -40,6 +40,193 @@ Private Const FIELD_RAW_PLACEHOLDER As String = "{Citation}"
 Private Const INTEXT_STYLE_ZH As String = "Banyan 引注"
 Private Const INTEXT_STYLE_EN As String = "Banyan Citation"
 
+' VBA-only process state. The cache is scoped to the active Document and the
+' batch depth makes nested refresh calls restore ScreenUpdating exactly once.
+Private m_styleCache As Object
+Private m_styleCacheDocument As Document
+Private m_batchUpdateDepth As Long
+Private m_batchScreenUpdating As Boolean
+Private m_batchUndoRecord As Object
+Private m_batchUndoStarted As Boolean
+
+
+' --- VBA global performance state ------------------------------------------
+
+Public Sub FieldBeginBatchUpdate()
+    On Error GoTo ErrHandler
+
+    If m_batchUpdateDepth = 0 Then
+        m_batchScreenUpdating = Application.ScreenUpdating
+        Application.ScreenUpdating = False
+        FieldBeginCustomUndoRecord
+    End If
+    m_batchUpdateDepth = m_batchUpdateDepth + 1
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldBeginBatchUpdate"
+End Sub
+
+Public Sub FieldEndBatchUpdate()
+    On Error Resume Next
+    If m_batchUpdateDepth <= 0 Then Exit Sub
+
+    m_batchUpdateDepth = m_batchUpdateDepth - 1
+    If m_batchUpdateDepth = 0 Then
+        FieldEndCustomUndoRecord
+        Application.ScreenUpdating = m_batchScreenUpdating
+    End If
+    On Error GoTo 0
+End Sub
+
+Private Sub FieldBeginCustomUndoRecord()
+    ' Late binding keeps older Word and Word for Mac builds from acquiring a
+    ' hard UndoRecord dependency. Unsupported hosts simply retain their native
+    ' undo behavior while the batch itself continues normally.
+    On Error GoTo Unsupported
+    Set m_batchUndoRecord = CallByName(Application, "UndoRecord", VbGet)
+    If m_batchUndoRecord Is Nothing Then Exit Sub
+    CallByName m_batchUndoRecord, "StartCustomRecord", VbMethod, "Banyan Update"
+    m_batchUndoStarted = True
+    Exit Sub
+
+Unsupported:
+    Err.Clear
+    m_batchUndoStarted = False
+    Set m_batchUndoRecord = Nothing
+End Sub
+
+Private Sub FieldEndCustomUndoRecord()
+    On Error Resume Next
+    If m_batchUndoStarted Then
+        CallByName m_batchUndoRecord, "EndCustomRecord", VbMethod
+    End If
+    m_batchUndoStarted = False
+    Set m_batchUndoRecord = Nothing
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Public Sub FieldClearPerformanceCache()
+    On Error Resume Next
+    Set m_styleCache = Nothing
+    Set m_styleCacheDocument = Nothing
+    On Error GoTo 0
+End Sub
+
+
+' --- Data comparison --------------------------------------------------------
+
+Public Function FieldDataEquals(ByVal currentData As Object, _
+                                ByVal nextData As Object) As Boolean
+    On Error GoTo ErrHandler
+    If currentData Is Nothing Or nextData Is Nothing Then Exit Function
+    ' This general comparison remains only for non-citation metadata paths.
+    ' Citation refresh uses FieldRichTextEquals on its known render inputs.
+    Dim currentJson As String
+    Dim nextJson As String
+    currentJson = JsonStringify(currentData)
+    nextJson = JsonStringify(nextData)
+    If Len(currentJson) = 0 Or Len(nextJson) = 0 Then Exit Function
+    FieldDataEquals = (currentJson = nextJson)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldDataEquals"
+    FieldDataEquals = False
+End Function
+
+Public Function FieldContentEquals(ByVal currentData As Object, _
+                                   ByVal nextData As Object) As Boolean
+    On Error GoTo ErrHandler
+    If currentData Is Nothing Or nextData Is Nothing Then Exit Function
+    If Not DictKeyIsDict(currentData, "content") Then Exit Function
+    If Not DictKeyIsDict(nextData, "content") Then Exit Function
+
+    Dim currentContent As Object
+    Dim nextContent As Object
+    Set currentContent = DictKeyObject(currentData, "content")
+    Set nextContent = DictKeyObject(nextData, "content")
+    If currentContent Is Nothing Or nextContent Is Nothing Then Exit Function
+    FieldContentEquals = FieldRichTextEquals(currentContent, nextContent)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldContentEquals"
+    FieldContentEquals = False
+End Function
+
+Public Function FieldRichTextEquals(ByVal currentContent As Object, _
+                                    ByVal nextContent As Object) As Boolean
+    On Error GoTo ErrHandler
+    If currentContent Is Nothing Or nextContent Is Nothing Then Exit Function
+    If TypeName(currentContent) <> "Dictionary" Then Exit Function
+    If TypeName(nextContent) <> "Dictionary" Then Exit Function
+
+    ' Both values have already passed FieldIsRichText in the collector/response
+    ' validators. Read the fixed schema directly here: generic Dict helpers add
+    ' measurable overhead for every property of every mark.
+    If CStr(currentContent("text")) <> CStr(nextContent("text")) Then Exit Function
+
+    Dim currentMarks As Object
+    Dim nextMarks As Object
+    Set currentMarks = currentContent("marks")
+    Set nextMarks = nextContent("marks")
+    If TypeName(currentMarks) <> "Collection" Then Exit Function
+    If TypeName(nextMarks) <> "Collection" Then Exit Function
+    If currentMarks.Count <> nextMarks.Count Then Exit Function
+
+    Dim i As Long
+    For i = 1 To currentMarks.Count
+        If Not InlineMarksEqual(currentMarks(i), nextMarks(i)) Then Exit Function
+    Next i
+
+    FieldRichTextEquals = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldRichTextEquals"
+    FieldRichTextEquals = False
+End Function
+
+Private Function InlineMarksEqual(ByVal currentMark As Variant, _
+                                  ByVal nextMark As Variant) As Boolean
+    On Error GoTo ErrHandler
+    If Not IsObject(currentMark) Or Not IsObject(nextMark) Then Exit Function
+
+    Dim currentObject As Object
+    Dim nextObject As Object
+    Set currentObject = currentMark
+    Set nextObject = nextMark
+    If TypeName(currentObject) <> "Dictionary" Then Exit Function
+    If TypeName(nextObject) <> "Dictionary" Then Exit Function
+
+    Dim markType As String
+    markType = CStr(currentObject("type"))
+    If markType <> CStr(nextObject("type")) Then Exit Function
+    If CLng(currentObject("start")) <> CLng(nextObject("start")) Then Exit Function
+    If CLng(currentObject("end")) <> CLng(nextObject("end")) Then Exit Function
+
+    Select Case markType
+        Case "bold", "italic"
+            If VarType(currentObject("value")) <> vbBoolean Then Exit Function
+            If VarType(nextObject("value")) <> vbBoolean Then Exit Function
+            If CBool(currentObject("value")) <> CBool(nextObject("value")) Then Exit Function
+        Case "script", "color", "backgroundColor", "link"
+            If VarType(currentObject("value")) <> vbString Then Exit Function
+            If VarType(nextObject("value")) <> vbString Then Exit Function
+            If CStr(currentObject("value")) <> CStr(nextObject("value")) Then Exit Function
+        Case Else
+            Exit Function
+    End Select
+
+    InlineMarksEqual = True
+    Exit Function
+
+ErrHandler:
+    InlineMarksEqual = False
+End Function
+
 
 ' --- JSON data ---
 
@@ -146,7 +333,7 @@ Public Function FieldCreateIntextCitationAtRange(ByVal targetRange As Range, _
     Dim fld As Field
     Set fld = FieldCreateRawAddinField(targetRange, "BANYAN_CITATION " & DictKeyString(data, "id"))
     FieldWriteData fld, data
-    FieldRenderStyledField fld
+    FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
 
     Set FieldCreateIntextCitationAtRange = fld
     Exit Function
@@ -173,7 +360,7 @@ Public Function FieldCreateNoteCitationAtRange(ByVal targetRange As Range, _
     Dim fld As Field
     Set fld = FieldCreateRawAddinField(noteRange, "BANYAN_CITATION " & DictKeyString(data, "id"))
     FieldWriteData fld, data
-    FieldRenderStyledField fld
+    FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
 
     Dim result As Collection
     Set result = New Collection
@@ -250,14 +437,29 @@ Public Function FieldRebuildNoteCitationAtRange(ByVal note As Footnote, _
     Set newRefContent = GetOptionalRichText(data, "reference")
     newRefText = FieldPlainTextFromContent(newRefContent)
 
-    Dim oldRefText As String
+    Dim oldRefContent As Object
     Dim oldData As Object
     Set oldData = FieldReadData(fld)
     If Not oldData Is Nothing Then
-        oldRefText = FieldPlainTextFromContent(GetOptionalRichText(oldData, "reference"))
+        Set oldRefContent = GetOptionalRichText(oldData, "reference")
     End If
 
-    If newRefText = oldRefText Then
+    If Not oldData Is Nothing Then
+        If FieldContentEquals(oldData, data) And _
+           FieldRichTextEquals(oldRefContent, newRefContent) Then
+            ' Source and other metadata do not affect the Word result. Keep the
+            ' existing field and footnote, but persist the latest response data.
+            If Not FieldWriteData(fld, data) Then Exit Function
+            Dim unchangedResult As Collection
+            Set unchangedResult = New Collection
+            unchangedResult.Add note, "note"
+            unchangedResult.Add fld, "field"
+            Set FieldRebuildNoteCitationAtRange = unchangedResult
+            Exit Function
+        End If
+    End If
+
+    If FieldRichTextEquals(oldRefContent, newRefContent) Then
         ' Reference unchanged - keep the footnote, replace the field in place.
         Dim sameField As Field
         Set sameField = FieldReplaceCitationInNote(note, fld, data)
@@ -303,7 +505,7 @@ Public Function FieldRebuildNoteCitationAtRange(ByVal note As Footnote, _
         Set newField = FieldCreateRawAddinField(noteRange, "BANYAN_CITATION " & DictKeyString(data, "id"))
         If Not newField Is Nothing Then
             FieldWriteData newField, data
-            FieldRenderStyledField newField
+            FieldRenderStyledFieldWithData newField, data, DictKeyObject(data, "content")
         End If
     Else
         Set newField = FieldReplaceCitationInNote(newNote, copiedField, data)
@@ -355,7 +557,7 @@ Private Function FieldReplaceCitationInNote(ByVal note As Footnote, _
     If newField Is Nothing Then Exit Function
 
     FieldWriteData newField, data
-    FieldRenderStyledField newField
+    FieldRenderStyledFieldWithData newField, data, DictKeyObject(data, "content")
 
     Set FieldReplaceCitationInNote = newField
     Exit Function
@@ -392,11 +594,47 @@ Public Function FieldRenderStyledField(ByVal fld As Field, _
     Set resolvedContent = ResolveFieldContent(fld, content)
     If resolvedContent Is Nothing Then Exit Function
 
+    Dim data As Object
+    Set data = FieldReadData(fld)
+    FieldRenderStyledField = RenderStyledFieldCore(fld, resolvedContent, data)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldRenderStyledField"
+    FieldRenderStyledField = False
+End Function
+
+' Use this entry point when the caller already has the parsed field data.
+' The legacy FieldRenderStyledField above intentionally keeps its read-from-
+' Field.Data behavior for callers that only have a Field object. Both paths
+' converge on RenderStyledFieldCore so rendering behavior cannot diverge.
+Public Function FieldRenderStyledFieldWithData(ByVal fld As Field, _
+                                               ByVal data As Object, _
+                                               Optional ByVal content As Variant) As Boolean
+    On Error GoTo ErrHandler
+
+    If data Is Nothing Then Exit Function
+
+    Dim resolvedContent As Object
+    Set resolvedContent = ResolveFieldContentFromData(data, content)
+    If resolvedContent Is Nothing Then Exit Function
+
+    FieldRenderStyledFieldWithData = RenderStyledFieldCore(fld, resolvedContent, data)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldRenderStyledFieldWithData"
+    FieldRenderStyledFieldWithData = False
+End Function
+
+Private Function RenderStyledFieldCore(ByVal fld As Field, _
+                                       ByVal resolvedContent As Object, _
+                                       ByVal data As Object) As Boolean
+    On Error GoTo ErrHandler
+
     WriteContentTextToRange fld.Result, resolvedContent
     fld.ShowCodes = False
 
-    Dim data As Object
-    Set data = FieldReadData(fld)
     If Not data Is Nothing Then
         If HasDictionaryKey(data, "type") Then
             If DictKeyString(data, "type") = "intext-citation" Then
@@ -409,13 +647,12 @@ Public Function FieldRenderStyledField(ByVal fld As Field, _
 
     FieldApplyRichTextStylesToRange fld.Result, resolvedContent
     FieldApplyRichTextLinksToRange fld.Result, resolvedContent
-
-    FieldRenderStyledField = True
+    RenderStyledFieldCore = True
     Exit Function
 
 ErrHandler:
-    DiagnosticsReraiseIfDev "modField.FieldRenderStyledField"
-    FieldRenderStyledField = False
+    DiagnosticsReraiseIfDev "modField.RenderStyledFieldCore"
+    RenderStyledFieldCore = False
 End Function
 
 Public Function FieldRenderStyledFieldWithStyle(ByVal fld As Field, _
@@ -464,9 +701,9 @@ Public Sub FieldApplyStyleToField(ByVal fld As Field, _
     If Len(Trim$(styleName)) = 0 Then Exit Sub
 
     Dim style As Style
-    Set style = FindWordStyle(styleName)
+    Set style = CachedWordStyle(styleName, styleType)
     If style Is Nothing Then
-        Set style = ActiveDocument.Styles.Add(Name:=styleName, Type:=styleType)
+        Exit Sub
     End If
 
     style.UnhideWhenUsed = True
@@ -477,6 +714,47 @@ Public Sub FieldApplyStyleToField(ByVal fld As Field, _
 ErrHandler:
     DiagnosticsReraiseIfDev "modField.FieldApplyStyleToField"
 End Sub
+
+Private Function CachedWordStyle(ByVal styleName As String, _
+                                 ByVal styleType As WdStyleType) As Style
+    On Error GoTo ErrHandler
+    If Len(Trim$(styleName)) = 0 Then Exit Function
+
+    If m_styleCache Is Nothing Then Set m_styleCache = New Dictionary
+
+    Dim cacheMatchesDocument As Boolean
+    Dim hasCachedDocument As Boolean
+    hasCachedDocument = Not (m_styleCacheDocument Is Nothing)
+    If Not hasCachedDocument Then
+        Set m_styleCacheDocument = ActiveDocument
+        cacheMatchesDocument = True
+    Else
+        cacheMatchesDocument = (m_styleCacheDocument Is ActiveDocument)
+    End If
+    If Not cacheMatchesDocument Then
+        Set m_styleCache = New Dictionary
+        Set m_styleCacheDocument = ActiveDocument
+    End If
+
+    If m_styleCache.Exists(styleName) Then
+        Set CachedWordStyle = m_styleCache(styleName)
+        Exit Function
+    End If
+
+    Dim style As Style
+    Set style = FindWordStyle(styleName)
+    If style Is Nothing Then
+        Set style = ActiveDocument.Styles.Add(Name:=styleName, Type:=styleType)
+    End If
+
+    Set m_styleCache(styleName) = style
+    Set CachedWordStyle = style
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.CachedWordStyle"
+    Set CachedWordStyle = Nothing
+End Function
 
 
 ' --- Collectors ---
@@ -489,11 +767,15 @@ Public Function FieldCollectIntextCitationFieldsInRange(ByVal targetRange As Ran
     Dim data As Object
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
+            If Not FieldCodeHasPrefix(fld, "BANYAN_CITATION") Then GoTo NextIntextField
             Set data = FieldReadData(fld)
             If FieldIsIntextCitation(data) Then
-                result.Add MakeFieldAndData(fld, data)
+                Dim pair As Collection
+                Set pair = MakeFieldAndData(fld, data)
+                result.Add pair
             End If
         End If
+NextIntextField:
     Next fld
 
     Set FieldCollectIntextCitationFieldsInRange = result
@@ -511,18 +793,43 @@ Public Function FieldCollectNoteCitationFootnotesInRange(ByVal targetRange As Ra
             Set fld = note.Range.Fields(1)
             If Not fld Is Nothing Then
                 If fld.Type = wdFieldAddin Then
+                    If Not FieldCodeHasPrefix(fld, "BANYAN_CITATION") Then GoTo NextNoteField
                     Set data = FieldReadData(fld)
                     If FieldIsNoteCitation(data) Then
-                        result.Add MakeNoteFieldAndData(note, fld, data)
+                        Dim pair As Collection
+                        Set pair = MakeNoteFieldAndData(note, fld, data)
+                        result.Add pair
                     End If
                 End If
             End If
         End If
+NextNoteField:
     Next note
 
     Set FieldCollectNoteCitationFootnotesInRange = result
 End Function
 
+Public Function FieldCodeHasPrefix(ByVal fld As Field, ByVal expectedPrefix As String) As Boolean
+    On Error GoTo ErrHandler
+    If fld Is Nothing Then Exit Function
+    If fld.Type <> wdFieldAddin Then Exit Function
+
+    Dim codeText As String
+    codeText = UCase$(Trim$(fld.Code.Text))
+    expectedPrefix = UCase$(Trim$(expectedPrefix))
+    If Left$(codeText, Len("ADDIN ")) = "ADDIN " Then codeText = Trim$(Mid$(codeText, Len("ADDIN ") + 1))
+    If Left$(codeText, Len(expectedPrefix)) <> expectedPrefix Then Exit Function
+    If Len(codeText) > Len(expectedPrefix) Then
+        FieldCodeHasPrefix = (Mid$(codeText, Len(expectedPrefix) + 1, 1) = " ")
+    Else
+        FieldCodeHasPrefix = True
+    End If
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldCodeHasPrefix"
+    FieldCodeHasPrefix = False
+End Function
 
 ' --- Migration helpers ---
 
@@ -827,6 +1134,29 @@ ErrHandler:
     Set ResolveFieldContent = Nothing
 End Function
 
+Private Function ResolveFieldContentFromData(ByVal data As Object, Optional ByVal content As Variant) As Object
+    On Error GoTo ErrHandler
+
+    If Not IsMissing(content) Then
+        If IsObject(content) Then
+            If FieldIsRichText(content) Then
+                Set ResolveFieldContentFromData = content
+                Exit Function
+            End If
+        End If
+    End If
+
+    If data Is Nothing Then Exit Function
+    If Not HasDictionaryKey(data, "content") Then Exit Function
+    If Not FieldIsRichText(DictKeyObject(data, "content")) Then Exit Function
+    Set ResolveFieldContentFromData = DictKeyObject(data, "content")
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.ResolveFieldContentFromData"
+    Set ResolveFieldContentFromData = Nothing
+End Function
+
 Private Function GetOptionalRichText(ByVal data As Object, ByVal key As String) As Object
     On Error GoTo ErrHandler
     If data Is Nothing Then Exit Function
@@ -1067,6 +1397,13 @@ Private Function MakeFieldAndData(ByVal fld As Field, ByVal data As Object) As C
     Set result = New Collection
     result.Add fld, "field"
     result.Add data, "data"
+
+    ' The collector has already parsed Field.Data. Retain the decisive rich-
+    ' text object in the refresh snapshot so the response loop does not need
+    ' to retrieve or parse the field again.
+    Dim content As Object
+    Set content = DictKeyObject(data, "content")
+    result.Add content, "content"
     Set MakeFieldAndData = result
 End Function
 
@@ -1076,6 +1413,13 @@ Private Function MakeNoteFieldAndData(ByVal note As Footnote, ByVal fld As Field
     result.Add note, "note"
     result.Add fld, "field"
     result.Add data, "data"
+
+    Dim content As Object
+    Dim reference As Object
+    Set content = DictKeyObject(data, "content")
+    result.Add content, "content"
+    Set reference = DictKeyObject(data, "reference")
+    result.Add reference, "reference"
     Set MakeNoteFieldAndData = result
 End Function
 

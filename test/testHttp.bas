@@ -27,7 +27,7 @@ End Function
 Private Function TestHttpBaseUrl() As Boolean
     Dim url As String
     url = HttpGetBaseUrl()
-    TestHttpBaseUrl = (url Like "http://localhost:*/banyan")
+    TestHttpBaseUrl = (url Like "http://127.0.0.1:*/banyan")
 End Function
 
 Private Function TestHttpIsMac() As Boolean

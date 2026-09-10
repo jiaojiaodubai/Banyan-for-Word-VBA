@@ -28,6 +28,7 @@ Public Function RunTests() As String
     report = report & TestResult("render rich text (bold/color/link)", TestFieldRenderRichText()) & vbCrLf
     report = report & TestResult("render from Field.Data (no content)", TestFieldRenderFromData()) & vbCrLf
     report = report & TestResult("note citation create + reference", TestFieldNoteCitation()) & vbCrLf
+    report = report & TestResult("note source-only refresh writes data (no rebuild)", TestFieldRebuildNoteCitationNoop()) & vbCrLf
     report = report & TestResult("note refresh same reference (no rebuild)", TestFieldRebuildNoteCitation()) & vbCrLf
     report = report & TestResult("note rebuild on reference change (rich copy)", TestFieldRebuildNoteCitationRefChange()) & vbCrLf
     report = report & TestResult("note renumber via custom refs (rebuild)", TestFieldNoteRenumberRebuild()) & vbCrLf
@@ -36,7 +37,208 @@ Public Function RunTests() As String
     report = report & TestResult("collectors in range", TestFieldCollectors()) & vbCrLf
     report = report & TestResult("validators", TestFieldValidators()) & vbCrLf
     report = report & TestResult("style identifier", TestFieldStyleIdentifier()) & vbCrLf
+    report = report & TestResult("data/content comparison", TestFieldDataComparison()) & vbCrLf
+    report = report & TestResult("targeted rich-text comparison", TestFieldRichTextComparison()) & vbCrLf
+    report = report & TestResult("batch screen updating state", TestFieldBatchScreenUpdating()) & vbCrLf
+    report = report & TestResult("batch custom undo record", TestFieldBatchUndoRecord()) & vbCrLf
     RunTests = report
+End Function
+
+Private Function TestFieldRebuildNoteCitationNoop() As Boolean
+    On Error GoTo ErrHandler
+    If ActiveDocument Is Nothing Then Exit Function
+
+    Dim data As Object
+    Set data = FieldCreatePlaceholderNoteCitationData("test-note-noop")
+    Set data("reference") = FieldCreateRichText("[1]")
+
+    Dim created As Collection
+    Set created = FieldCreateNoteCitationAtRange(TestDocEndRange(ActiveDocument), data)
+    If created Is Nothing Then Exit Function
+
+    ' A local result edit makes an unnecessary render/rebuild observable.
+    created("field").Result.Text = "LOCAL RESULT"
+
+    Dim updatedData As Object
+    Set updatedData = FieldCreatePlaceholderNoteCitationData("test-note-noop")
+    Set updatedData("content") = DictKeyObject(data, "content")
+    Set updatedData("reference") = DictKeyObject(data, "reference")
+    Set updatedData("source") = TestSource("updated-source")
+
+    Dim rebuilt As Collection
+    Set rebuilt = FieldRebuildNoteCitationAtRange(created("note"), created("field"), updatedData)
+    If rebuilt Is Nothing Then Exit Function
+
+    Dim ok As Boolean
+    ok = (rebuilt("note") Is created("note"))
+    ok = ok And (rebuilt("field") Is created("field"))
+    ok = ok And (rebuilt("field").Result.Text = "LOCAL RESULT")
+
+    Dim storedData As Object
+    Set storedData = FieldReadData(rebuilt("field"))
+    If storedData Is Nothing Then
+        ok = False
+    Else
+        ok = ok And (CStr(storedData("source")("cites")(1)) = "updated-source")
+    End If
+    FieldRemoveFootnoteSafely created("note")
+    TestFieldRebuildNoteCitationNoop = ok
+    Exit Function
+
+ErrHandler:
+    TestFieldRebuildNoteCitationNoop = False
+End Function
+
+Private Function TestFieldRichTextComparison() As Boolean
+    On Error GoTo ErrHandler
+
+    Dim currentContent As Object
+    Dim nextContent As Object
+    Set currentContent = TestComparisonRichText()
+    Set nextContent = TestComparisonRichText()
+
+    Dim ok As Boolean
+    ok = FieldRichTextEquals(currentContent, nextContent)
+
+    nextContent("text") = "Different"
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    Set nextContent = TestComparisonRichText()
+    nextContent("marks").Remove 2
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    Set nextContent = TestComparisonRichText()
+    nextContent("marks")(1)("type") = "italic"
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    Set nextContent = TestComparisonRichText()
+    nextContent("marks")(1)("start") = 1
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    Set nextContent = TestComparisonRichText()
+    nextContent("marks")(1)("end") = 3
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    Set nextContent = TestComparisonRichText()
+    nextContent("marks")(1)("value") = False
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    Set nextContent = TestComparisonRichText()
+    nextContent("marks")(2)("value") = "banyan://entry/other"
+    ok = ok And (Not FieldRichTextEquals(currentContent, nextContent))
+
+    TestFieldRichTextComparison = ok
+    Exit Function
+
+ErrHandler:
+    TestFieldRichTextComparison = False
+End Function
+
+Private Function TestFieldDataComparison() As Boolean
+    On Error GoTo ErrHandler
+
+    Dim currentData As Object
+    Dim nextData As Object
+    Set currentData = FieldCreatePlaceholderIntextCitationData("test-compare")
+    Set nextData = FieldCreatePlaceholderIntextCitationData("test-compare")
+
+    Dim ok As Boolean
+    ok = FieldDataEquals(currentData, nextData)
+    ok = ok And FieldContentEquals(currentData, nextData)
+
+    Set nextData("content") = FieldCreateRichText("[UPDATED]")
+    ok = ok And (Not FieldDataEquals(currentData, nextData))
+    ok = ok And (Not FieldContentEquals(currentData, nextData))
+
+    Set nextData("content") = DictKeyObject(currentData, "content")
+    Set nextData("source") = TestSource("changed-source")
+    ok = ok And (Not FieldDataEquals(currentData, nextData))
+    ok = ok And FieldContentEquals(currentData, nextData)
+
+    TestFieldDataComparison = ok
+    Exit Function
+
+ErrHandler:
+    TestFieldDataComparison = False
+End Function
+
+Private Function TestFieldBatchScreenUpdating() As Boolean
+    On Error GoTo ErrHandler
+
+    Dim originalValue As Boolean
+    originalValue = Application.ScreenUpdating
+
+    FieldBeginBatchUpdate
+    If Application.ScreenUpdating Then GoTo Failed
+    FieldBeginBatchUpdate
+    If Application.ScreenUpdating Then GoTo Failed
+    FieldEndBatchUpdate
+    If Application.ScreenUpdating Then GoTo Failed
+    FieldEndBatchUpdate
+    If Application.ScreenUpdating <> originalValue Then GoTo Failed
+
+    TestFieldBatchScreenUpdating = True
+    Exit Function
+
+Failed:
+    FieldEndBatchUpdate
+    FieldEndBatchUpdate
+    Application.ScreenUpdating = originalValue
+    Exit Function
+
+ErrHandler:
+    On Error Resume Next
+    FieldEndBatchUpdate
+    FieldEndBatchUpdate
+    Application.ScreenUpdating = originalValue
+    On Error GoTo 0
+    TestFieldBatchScreenUpdating = False
+End Function
+
+Private Function TestFieldBatchUndoRecord() As Boolean
+    On Error GoTo ErrHandler
+
+    Dim undoRecord As Object
+    Set undoRecord = CallByName(Application, "UndoRecord", VbGet)
+    If undoRecord Is Nothing Then Exit Function
+
+    Dim originalText As String
+    originalText = ActiveDocument.Content.Text
+
+    FieldBeginBatchUpdate
+    Dim activeAtOuterDepth As Boolean
+    activeAtOuterDepth = CBool(CallByName(undoRecord, "IsRecordingCustomRecord", VbGet))
+    TestDocEndRange(ActiveDocument).InsertBefore "undo-outer"
+
+    FieldBeginBatchUpdate
+    Dim activeAtNestedDepth As Boolean
+    activeAtNestedDepth = CBool(CallByName(undoRecord, "IsRecordingCustomRecord", VbGet))
+    TestDocEndRange(ActiveDocument).InsertBefore "undo-nested"
+    FieldEndBatchUpdate
+    Dim activeAfterNestedEnd As Boolean
+    activeAfterNestedEnd = CBool(CallByName(undoRecord, "IsRecordingCustomRecord", VbGet))
+
+    FieldEndBatchUpdate
+    Dim activeAfterOuterEnd As Boolean
+    activeAfterOuterEnd = CBool(CallByName(undoRecord, "IsRecordingCustomRecord", VbGet))
+
+    Dim undoSucceeded As Boolean
+    undoSucceeded = ActiveDocument.Undo
+    Dim changesMerged As Boolean
+    changesMerged = undoSucceeded And (ActiveDocument.Content.Text = originalText)
+
+    TestFieldBatchUndoRecord = activeAtOuterDepth And activeAtNestedDepth And _
+                               activeAfterNestedEnd And Not activeAfterOuterEnd And _
+                               changesMerged
+    Exit Function
+
+ErrHandler:
+    On Error Resume Next
+    FieldEndBatchUpdate
+    FieldEndBatchUpdate
+    If Len(originalText) > 0 Then ActiveDocument.Content.Text = originalText
+    On Error GoTo 0
+    TestFieldBatchUndoRecord = False
 End Function
 
 
@@ -112,7 +314,7 @@ Private Function TestFieldRenderRichText() As Boolean
     FieldWriteData fld, data
 
     Dim ok As Boolean
-    ok = FieldRenderStyledField(fld, content)
+    ok = FieldRenderStyledFieldWithData(fld, data, content)
     ok = ok And (fld.Result.Text = "(Zhang, 2020)")
 
     Dim res As Range
@@ -734,6 +936,16 @@ Private Function TestFieldCollectors() As Boolean
     Dim ok As Boolean
     ok = (intextCol.Count = 2)
     ok = ok And (noteCol.Count = 1)
+    If ok Then
+        Dim cachedContent As Object
+        Set cachedContent = intextCol(1)("content")
+        ok = FieldRichTextEquals(cachedContent, DictKeyObject(intextCol(1)("data"), "content"))
+        Set cachedContent = noteCol(1)("content")
+        ok = ok And FieldRichTextEquals(cachedContent, DictKeyObject(noteCol(1)("data"), "content"))
+        Dim cachedReference As Object
+        Set cachedReference = noteCol(1)("reference")
+        ok = ok And FieldRichTextEquals(cachedReference, DictKeyObject(noteCol(1)("data"), "reference"))
+    End If
 
     FieldRemoveFieldSafely f1
     FieldRemoveFieldSafely f2
@@ -875,6 +1087,19 @@ Private Function TestMark(ByVal markType As String, _
         mark("value") = value
     End If
     Set TestMark = mark
+End Function
+
+Private Function TestComparisonRichText() As Object
+    Dim content As Object
+    Set content = New Dictionary
+    content("text") = "Compare"
+
+    Dim marks As Collection
+    Set marks = New Collection
+    marks.Add TestMark("bold", 0, 2, True)
+    marks.Add TestMark("link", 0, 7, "banyan://entry/compare")
+    Set content("marks") = marks
+    Set TestComparisonRichText = content
 End Function
 
 Private Function TestDocEndRange(ByVal doc As Document) As Range

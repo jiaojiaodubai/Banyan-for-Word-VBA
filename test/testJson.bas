@@ -51,7 +51,6 @@ Private Function TestJsonStringify() As Boolean
                          s = "{""y"":""test"",""x"":42}")
 End Function
 
-
 Private Function TestResult(ByVal name As String, ByVal passed As Boolean) As String
     If passed Then
         TestResult = "[PASS] " & name

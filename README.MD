@@ -90,7 +90,7 @@ The rest of this file is for people building, extending, or testing the add-in f
 | `modJson.bas` | Banyan JSON adapter with error-safe parse/stringify helpers. |
 | `modI10n.bas` | Lightweight localization registry and lookup. |
 | `modShell.bas` | Shared macOS shell execution through `popen`. |
-| `modHttp.bas` | Synchronous HTTP client for Windows and macOS. |
+| `modHttp.bas` | Synchronous HTTP client for Windows and macOS. The base URL is hardcoded to `127.0.0.1` (Zotero's HTTP server binds IPv4 loopback only) so WinHTTP never pays its ~2 s `localhost` IPv6 fallback on Windows. |
 | `modProgress.bas` | Best-effort backend progress UI calls. |
 | `modDiagnostics.bas` | Shared diagnostic message helpers (incl. the dev-mode re-raise policy). |
 | `modField.bas` | Banyan ADDIN field creation, rendering, migration, and cleanup helpers. |

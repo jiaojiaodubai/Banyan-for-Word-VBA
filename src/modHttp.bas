@@ -11,7 +11,7 @@ Option Explicit
 '   HttpPost(url, body, headers)  -> response text ("" on error)
 '   HttpGet(url)                  -> response text ("" on error)
 '   HttpGetPort()                 -> fixed local server port
-'   HttpGetBaseUrl()              -> "http://localhost:<port>/banyan"
+'   HttpGetBaseUrl()              -> "http://127.0.0.1:<port>/banyan"
 '   IsMac()                       -> platform detection
 '
 ' Cross-platform approach inspired by VBA-Web:
@@ -31,6 +31,9 @@ Private Const HTTP_CONNECT_TIMEOUT_MS As Long = 10000
 Private Const HTTP_SEND_TIMEOUT_MS    As Long = 30000
 Private Const HTTP_RECEIVE_TIMEOUT_MS As Long = 300000
 
+' Host is always IPv4 loopback - see HttpGetBaseUrl for why.
+Private Const BASE_HOST As String = "127.0.0.1"
+
 Private m_lastError As String
 Private m_lastTransportError As Boolean
 Private m_activePort As String
@@ -44,7 +47,7 @@ End Function
 
 
 ' --- HttpPost - Send a POST request. ---
-' url     - Full URL (e.g. "http://localhost:23119/banyan/citation")
+' url     - Full URL (e.g. "http://127.0.0.1:23119/banyan/citation")
 ' body    - Request body (JSON string, or "" for no body)
 ' headers - Optional late-bound Dictionary of extra header name->value pairs
 ' Default headers (Content-Type, Zotero-Allowed-Request,
@@ -416,10 +419,25 @@ Private Sub RememberPort(ByVal url As String)
 End Sub
 
 
-' --- HttpGetBaseUrl - Returns  "http://localhost:<port>/banyan" ---
+' --- HttpGetBaseUrl - Banyan API base URL ------------------------------------
+' The host is hardcoded to IPv4 loopback (127.0.0.1) on purpose:
+'   * Zotero's HTTP server (Zotero.Server -> Mozilla httpd) binds IPv4 loopback
+'     only. Zotero starts it without a host argument and logs "HTTP server
+'     listening on 127.0.0.1:<port>"; there is no [::1] listener. The host is
+'     therefore fixed at the server layer - nothing to detect or negotiate.
+'   * On Windows, WinHTTP (MSXML2.ServerXMLHTTP) resolves "localhost" to ::1
+'     FIRST and pays a ~2 s connect penalty before falling back to IPv4 - on
+'     EVERY request, because each request opens a fresh connection. Calling
+'     127.0.0.1 directly avoids that cost entirely.
+'   * Zotero's own UI shows the port as "localhost:<port>". That is a display
+'     form only; the listener behind it is the IPv4 one above.
+' Only the port may legitimately differ (23119 default, 23124 fallback), which
+' HttpGetPort/AlternatePortUrl already handle. A non-standard port configured
+' elsewhere is out of scope: the request simply fails and the existing error
+' surfacing reports it (HttpGetLastError + the caller's error dialog/warning).
 
 Public Function HttpGetBaseUrl() As String
-    HttpGetBaseUrl = "http://localhost:" & HttpGetPort() & BASE_PATH
+    HttpGetBaseUrl = "http://" & BASE_HOST & ":" & HttpGetPort() & BASE_PATH
 End Function
 
 

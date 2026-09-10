@@ -96,7 +96,7 @@ Private Function AddIntextCitation(ByVal targetRange As Range, ByVal style As Ob
 
     Set data("source") = source
     FieldWriteData fld, data
-    FieldRenderStyledField fld
+    FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
     AddIntextCitation = True
     Exit Function
 
@@ -120,7 +120,7 @@ Private Function EditIntextCitation(ByVal fd As Collection, ByVal style As Objec
 
     Set data("source") = source
     FieldWriteData fld, data
-    FieldRenderStyledField fld
+    ' RequestCitation only changes the source; the rendered content is stable.
     EditIntextCitation = True
 End Function
 
@@ -163,7 +163,7 @@ Private Function AddNoteCitation(ByVal targetRange As Range, ByVal style As Obje
 
     Set data("source") = source
     FieldWriteData fld, data
-    FieldRenderStyledField fld
+    FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
     AddNoteCitation = True
     Exit Function
 
