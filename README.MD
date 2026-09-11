@@ -171,6 +171,14 @@ Other dev commands:
 
   It COM-injects all `src` + `test` modules into a throwaway document, runs every `test*` module's `RunTests()`, and exits non-zero on any failure (the VBA equivalent of "lint + mocha" in a TS project). `testField` mutates the document, so it runs last. The gate imports `modTest.bas` with `DEV_MODE = True`, so dev-mode re-raises stay active and swallowed bugs fail loudly.
 - **Live flow runner:** `test\Run-Flow.ps1` drives `modAutomation` end to end (style -> item snapshot -> pending citation/bibliography -> refresh, with rich-text assertions and a second refresh for idempotency). It needs a running backend and is not part of the dev gate.
+- **Bookmark names follow Word's rules** (start with a letter; letters, digits and underscores only;
+  no spaces or punctuation; 40 characters max). Authoritative sources: the Office.js reference
+  `Word.BookmarkCollection.add` (states the full rule set) and the Word VBA reference `Bookmarks.Add`
+  (40 characters / one word); `src/modField.bas` carries the URLs and the Word 16 verification notes.
+  `modField.FieldNormalizeBookmarkName` is the single normalizer, applied by the name generator
+  `FieldGetBibliographyBookmarkName` (bookmark and hyperlink SubAddress alike) and by
+  `FieldAddBookmarkToField` before `Bookmarks.Add`. `testField` asserts the normalization;
+  `Run-Flow.ps1` re-checks the rule on the live document.
 - **Bibliography refresh benchmark:** `test\Run-Perf.ps1 -BackendBibliographyOnly -Sizes 10,25,50 -Repetitions 2` builds real citations through the automation API, refreshes against the live backend, appends one citation, and compares row-moving with minimal add/delete diff patching on the same returned lines.
 - **Import `.cls` class modules through the shared encoding pipeline - never import a raw source file
   directly.** A raw `VBComponents.Import` of `src/Dictionary.cls` can create a STANDARD module, so its

@@ -31,11 +31,16 @@ Option Explicit
 '   FieldMigrateNoteCitationsToIntext(range)
 '   FieldRemoveFieldSafely(field) / FieldRemoveFootnoteSafely(footnote)
 '   FieldAddBookmarkToField(field, bookmarkName)
+'   FieldNormalizeBookmarkName(rawName)
 '   FieldGetBibliographyBookmarkName(entryId)
 ' ============================================================================
 
 Private Const FIELD_PLACEHOLDER_COLOR As String = "#ff0000"
 Private Const FIELD_RAW_PLACEHOLDER As String = "{Citation}"
+
+' Word bookmark rules enforced by FieldNormalizeBookmarkName.
+Private Const FIELD_BOOKMARK_MAX_LENGTH As Long = 40
+Private Const FIELD_BIBLIOGRAPHY_BOOKMARK_PREFIX As String = "Banyan_Entry_"
 
 Private Const INTEXT_STYLE_ZH As String = "Banyan 引注"
 Private Const INTEXT_STYLE_EN As String = "Banyan Citation"
@@ -1053,10 +1058,54 @@ Public Sub FieldRemoveEndnoteSafely(ByVal note As Endnote)
     On Error GoTo 0
 End Sub
 
+' Word bookmark naming rules - authoritative sources:
+'   - Office.js Word.BookmarkCollection.add
+'     (learn.microsoft.com/en-us/javascript/api/word/word.bookmarkcollection): the
+'     name "cannot be more than 40 characters or include more than one word. Also,
+'     the name must begin with a letter. It can include both numbers and letters,
+'     but not spaces. If you need to separate words, use an underscore."
+'   - Word VBA Bookmarks.Add (learn.microsoft.com/en-us/office/vba/api/word.bookmarks.add):
+'     "The name cannot be more than 40 characters or include more than one word."
+' Verified in Word 16 (zh-CN): spaces and punctuation (. - ,) and a digit-first
+' name are rejected, an underscore start creates a hidden bookmark, and a name
+' longer than 40 characters is accepted but silently truncated to 40 - so the
+' truncation here matches what Word would store.
+Public Function FieldNormalizeBookmarkName(ByVal rawName As String) As String
+    Dim normalized As String
+    Dim ch As String
+    Dim code As Long
+    Dim i As Long
+
+    rawName = Trim$(rawName)
+    If Len(rawName) = 0 Then Exit Function
+
+    For i = 1 To Len(rawName)
+        ch = Mid$(rawName, i, 1)
+        Select Case AscW(ch)
+            Case 48 To 57, 65 To 90, 95, 97 To 122
+                normalized = normalized & ch
+            Case Else
+                normalized = normalized & "_"
+        End Select
+    Next i
+
+    code = AscW(Left$(normalized, 1))
+    If Not ((code >= 65 And code <= 90) Or (code >= 97 And code <= 122)) Then
+        normalized = "B" & normalized
+    End If
+
+    If Len(normalized) > FIELD_BOOKMARK_MAX_LENGTH Then
+        normalized = Left$(normalized, FIELD_BOOKMARK_MAX_LENGTH)
+    End If
+    FieldNormalizeBookmarkName = normalized
+End Function
+
 Public Sub FieldAddBookmarkToField(ByVal fld As Field, ByVal bookmarkName As String)
     On Error GoTo ErrHandler
     If fld Is Nothing Then Exit Sub
-    If Len(Trim$(bookmarkName)) = 0 Then Exit Sub
+
+    bookmarkName = FieldNormalizeBookmarkName(bookmarkName)
+    If Len(bookmarkName) = 0 Then Exit Sub
 
     Dim bookmarks As Bookmarks
     Set bookmarks = ActiveDocument.Bookmarks
@@ -1072,8 +1121,12 @@ ErrHandler:
     DiagnosticsReraiseIfDev "modField.FieldAddBookmarkToField"
 End Sub
 
+' Canonical bibliography bookmark name. ApplyRichTextLink builds the hyperlink
+' SubAddress from this same function, so bookmark and link always carry the
+' identical normalized name.
 Public Function FieldGetBibliographyBookmarkName(ByVal entryId As String) As String
-    FieldGetBibliographyBookmarkName = "Banyan_Entry_" & entryId
+    FieldGetBibliographyBookmarkName = _
+        FieldNormalizeBookmarkName(FIELD_BIBLIOGRAPHY_BOOKMARK_PREFIX & entryId)
 End Function
 
 

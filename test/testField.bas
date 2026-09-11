@@ -39,6 +39,7 @@ Public Function RunTests() As String
     report = report & TestResult("style identifier", TestFieldStyleIdentifier()) & vbCrLf
     report = report & TestResult("data/content comparison", TestFieldDataComparison()) & vbCrLf
     report = report & TestResult("targeted rich-text comparison", TestFieldRichTextComparison()) & vbCrLf
+    report = report & TestResult("bookmark name normalization", TestFieldBookmarkNameNormalization()) & vbCrLf
     report = report & TestResult("batch screen updating state", TestFieldBatchScreenUpdating()) & vbCrLf
     report = report & TestResult("batch custom undo record", TestFieldBatchUndoRecord()) & vbCrLf
     RunTests = report
@@ -132,6 +133,46 @@ Private Function TestFieldRichTextComparison() As Boolean
 
 ErrHandler:
     TestFieldRichTextComparison = False
+End Function
+
+Private Function TestFieldBookmarkNameNormalization() As Boolean
+    On Error GoTo ErrHandler
+
+    ' Valid names pass through unchanged (Zotero keys are 8-char alphanumerics).
+    Dim ok As Boolean
+    ok = (FieldGetBibliographyBookmarkName("JZGANGMD") = "Banyan_Entry_JZGANGMD")
+
+    ' Spaces and punctuation become underscores, a non-letter start gets a
+    ' letter prefix, and the result never exceeds 40 characters.
+    ok = ok And (FieldNormalizeBookmarkName("supp fig 1.2") = "supp_fig_1_2")
+    ok = ok And (FieldNormalizeBookmarkName("1abc") = "B1abc")
+    ok = ok And (FieldNormalizeBookmarkName("_hidden") = "B_hidden")
+    ok = ok And (FieldNormalizeBookmarkName("") = "")
+    ok = ok And (Len(FieldNormalizeBookmarkName(String(60, "a"))) = 40)
+    ok = ok And (Len(FieldGetBibliographyBookmarkName(String(60, "a"))) = 40)
+    ok = ok And TestIsWordBookmarkName(FieldGetBibliographyBookmarkName("a b.c-d"))
+
+    ' The document gate normalizes whatever name a caller passes.
+    Dim fld As Field
+    Set fld = FieldCreateRawAddinField(TestDocEndRange(ActiveDocument), "BANYAN_TEST bookmark")
+    If fld Is Nothing Then Exit Function
+    FieldAddBookmarkToField fld, "Banyan Entry bad.name"
+    ok = ok And ActiveDocument.Bookmarks.Exists("Banyan_Entry_bad_name")
+
+    If ActiveDocument.Bookmarks.Exists("Banyan_Entry_bad_name") Then _
+        ActiveDocument.Bookmarks("Banyan_Entry_bad_name").Delete
+    FieldRemoveFieldSafely fld
+
+    TestFieldBookmarkNameNormalization = ok
+    Exit Function
+
+ErrHandler:
+    On Error Resume Next
+    If ActiveDocument.Bookmarks.Exists("Banyan_Entry_bad_name") Then _
+        ActiveDocument.Bookmarks("Banyan_Entry_bad_name").Delete
+    If Not fld Is Nothing Then FieldRemoveFieldSafely fld
+    On Error GoTo 0
+    TestFieldBookmarkNameNormalization = False
 End Function
 
 Private Function TestFieldDataComparison() As Boolean
@@ -1100,6 +1141,24 @@ Private Function TestComparisonRichText() As Object
     marks.Add TestMark("link", 0, 7, "banyan://entry/compare")
     Set content("marks") = marks
     Set TestComparisonRichText = content
+End Function
+
+Private Function TestIsWordBookmarkName(ByVal name As String) As Boolean
+    ' Word rules (see FieldNormalizeBookmarkName for the authoritative sources):
+    ' start with a letter, letters/digits/underscore only, max 40 characters.
+    If Len(name) = 0 Or Len(name) > 40 Then Exit Function
+
+    Dim code As Long
+    code = AscW(Left$(name, 1))
+    If Not ((code >= 65 And code <= 90) Or (code >= 97 And code <= 122)) Then Exit Function
+
+    Dim i As Long
+    For i = 1 To Len(name)
+        code = AscW(Mid$(name, i, 1))
+        If Not ((code >= 48 And code <= 57) Or (code >= 65 And code <= 90) _
+            Or (code >= 97 And code <= 122) Or code = 95) Then Exit Function
+    Next i
+    TestIsWordBookmarkName = True
 End Function
 
 Private Function TestDocEndRange(ByVal doc As Document) As Range

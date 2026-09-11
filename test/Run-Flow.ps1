@@ -259,6 +259,12 @@ try {
     foreach ($bookmark in $doc.Bookmarks) { $bookmarkNames += [string]$bookmark.Name }
     Add-Check "bibliography bookmark exists" ($bookmarkNames -contains "Banyan_Entry_$ItemKey") `
         ($bookmarkNames -join ', ')
+    # Word rules: start with a letter, letters/digits/underscore only, 40 chars max.
+    $banyanBookmarks = @($bookmarkNames | Where-Object { $_ -like 'Banyan_*' })
+    $invalidBookmarks = @($banyanBookmarks | Where-Object { $_ -notmatch '^[A-Za-z][A-Za-z0-9_]{0,39}$' })
+    Add-Check "bookmark names follow Word rules" `
+        (($banyanBookmarks.Count -ge 1) -and ($invalidBookmarks.Count -eq 0)) `
+        ($banyanBookmarks -join ', ')
 
     # --- 6. Second refresh (idempotency) ------------------------------------
     if (-not $SkipSecondRefresh) {
