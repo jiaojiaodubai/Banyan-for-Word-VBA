@@ -171,6 +171,7 @@ Other dev commands:
 
   It COM-injects all `src` + `test` modules into a throwaway document, runs every `test*` module's `RunTests()`, and exits non-zero on any failure (the VBA equivalent of "lint + mocha" in a TS project). `testField` mutates the document, so it runs last. The gate imports `modTest.bas` with `DEV_MODE = True`, so dev-mode re-raises stay active and swallowed bugs fail loudly.
 - **Live flow runner:** `test\Run-Flow.ps1` drives `modAutomation` end to end (style -> item snapshot -> pending citation/bibliography -> refresh, with rich-text assertions and a second refresh for idempotency). It needs a running backend and is not part of the dev gate.
+- **Bibliography refresh benchmark:** `test\Run-Perf.ps1 -BackendBibliographyOnly -Sizes 10,25,50 -Repetitions 2` builds real citations through the automation API, refreshes against the live backend, appends one citation, and compares row-moving with minimal add/delete diff patching on the same returned lines.
 - **Import `.cls` class modules through the shared encoding pipeline - never import a raw source file
   directly.** A raw `VBComponents.Import` of `src/Dictionary.cls` can create a STANDARD module, so its
   `VERSION 1.0 CLASS` / `BEGIN` / `END` header lines become ordinary code and the whole project fails to

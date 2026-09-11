@@ -52,6 +52,7 @@ $testModules = @(
     "testDict",
     "testHttp",
     "testPreference",
+    "testRefresh",
     "testField"
 )
 

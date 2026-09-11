@@ -2,10 +2,10 @@
 # Run-Perf.ps1 - Diagnostic timing probe for the Banyan pipeline.
 #
 # NOT the dev gate. This imports all src modules plus the diagnostic probe
-# test\testPerf.bas into a throwaway Word document (hidden by default) and runs
-# testPerf.RunPerf(), which measures the per-stage INTERNAL cost of the
-# citation insert / refresh pipeline. Backend/dialog time is excluded; pass
-# -Visible to include the cost of updating a visible Word window.
+# test\testPerf.bas into a throwaway Word document (hidden by default). The
+# default RunPerf entry measures local Word/VBA stages and excludes backend and
+# dialog time. -BackendBibliographyOnly deliberately uses the live backend to
+# generate production bibliography lines for a paired patch comparison.
 #
 # The probe is imported with DEV_MODE = True so a swallowed business error
 # surfaces as a loud [FAIL] line instead of silently producing bogus "fast"
@@ -13,6 +13,7 @@
 #
 # Usage: powershell -ExecutionPolicy Bypass -File .\test\Run-Perf.ps1
 #        .\test\Run-Perf.ps1 -Sizes 10,50,100 -Repetitions 4 -Visible
+#        .\test\Run-Perf.ps1 -BackendBibliographyOnly -Sizes 10,25,50 -Repetitions 2
 # ============================================================================
 [CmdletBinding()]
 param(
@@ -24,7 +25,9 @@ param(
 
     [switch]$Visible,
 
-    [switch]$ComparisonOnly
+    [switch]$ComparisonOnly,
+
+    [switch]$BackendBibliographyOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,7 +143,13 @@ try {
     try {
         $macroSizes = $sizesCsv
         $macroRepetitions = $Repetitions
-        $macroName = if ($ComparisonOnly) { 'testPerf.RunComparisonPerf' } else { 'testPerf.RunPerf' }
+        if ($BackendBibliographyOnly) {
+            $macroName = 'testPerf.RunBackendBibliographyPerf'
+        } elseif ($ComparisonOnly) {
+            $macroName = 'testPerf.RunComparisonPerf'
+        } else {
+            $macroName = 'testPerf.RunPerf'
+        }
         $res = $word.Run($macroName, [ref]$macroSizes, [ref]$macroRepetitions)
     } catch {
         $res = "[FAIL] testPerf.RunPerf could not run: $($_.Exception.Message)`n"

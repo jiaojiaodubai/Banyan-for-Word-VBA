@@ -228,7 +228,7 @@ Private Function CreatePendingBibliographyField(ByVal targetRange As Range, ByVa
     cursor.Collapse wdCollapseEnd
 
     Dim fld As Field
-    Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY")
+    Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
     If fld Is Nothing Then Exit Function
 
     FieldWriteData fld, data
@@ -244,6 +244,7 @@ End Function
 Private Function PendingBibliographyLine() As Object
     Dim data As Object
     Set data = New Dictionary
+    data("id") = FieldCreateId()
     data("type") = "bibliography-title"
     Set data("content") = FieldCreateRichText("{ BIBLIOGRAPHY }", FIELD_PLACEHOLDER_COLOR)
 
@@ -309,11 +310,7 @@ Private Sub InsertBibliography(ByVal targetRange As Range, ByVal lines As Collec
     For i = 1 To lines.Count
         Set line = lines(i)
 
-        If FieldIsBibliographyEntry(line) Then
-            fieldCode = "BANYAN_BIBLIOGRAPHY " & DictKeyString(line, "id")
-        Else
-            fieldCode = "BANYAN_BIBLIOGRAPHY"
-        End If
+        fieldCode = "BANYAN_BIBLIOGRAPHY " & DictKeyString(line, "id")
 
         Set fld = FieldCreateRawAddinField(cursor, fieldCode)
         If fld Is Nothing Then Exit Sub

@@ -2,8 +2,9 @@ Option Explicit
 
 ' ============================================================================
 ' Module  : testPerf
-' Purpose : Diagnostic timing probe for the local Word/VBA portion of citation
-'           insertion and refresh. No backend calls are made.
+' Purpose : Diagnostic timing probe for citation insertion and refresh. The
+'           default entry point is local-only; RunBackendBibliographyPerf uses
+'           the live backend to obtain production bibliography lines.
 ' ============================================================================
 
 #If Mac Then
@@ -96,6 +97,217 @@ Public Function RunComparisonPerf(Optional ByVal sizesCsv As String = "100,1000"
 ErrHandler:
     RunComparisonPerf = m_report & "[FAIL] testPerf.RunComparisonPerf: " & Err.Description
 End Function
+
+Public Function RunBackendBibliographyPerf(Optional ByVal sizesCsv As String = "10,25,50", _
+                                           Optional ByVal repetitions As Long = 2) As String
+    On Error GoTo ErrHandler
+    If repetitions < 1 Then repetitions = 1
+    Dim sizes As Collection
+    Set sizes = ParseSizes(sizesCsv)
+    If sizes.Count = 0 Then Err.Raise 5, "testPerf.RunBackendBibliographyPerf", "No valid positive sizes were supplied."
+
+    m_report = "testPerf live bibliography append refresh" & vbCrLf & String(72, "-") & vbCrLf
+    Out "[INFO] clock=" & PerfClockName() & "; repetitions=" & CStr(repetitions) & _
+        "; initial citations=" & sizesCsv
+    Out "[INFO] workload=real backend initial refresh, append one distinct citation, timed refresh"
+    Dim snapshotCount As Long
+    snapshotCount = AutomationItemsSnapshot(100)
+    If snapshotCount = 0 Then Err.Raise 5, , "No Zotero items were available."
+
+    Dim item As Variant
+    For Each item In sizes
+        Dim initialCount As Long
+        initialCount = CLng(item)
+        If initialCount + repetitions > snapshotCount Then Err.Raise 5, , "Not enough snapshot items for requested size."
+        Dim total As Double
+        Dim rowMoveLocalTotal As Double
+        Dim minimalDiffLocalTotal As Double
+        Dim repetition As Long
+        For repetition = 1 To repetitions
+            ResetPerfDocument
+            If Not AutomationStyleApply("gb-t-7714-2025-numeric") Then Err.Raise 5, , "Could not apply numeric style."
+
+            Dim i As Long
+            For i = 1 To initialCount
+                If Not AutomationInsertPendingCitationForKey(AutomationItemKeyAt(i)) Then _
+                    Err.Raise 5, , "Could not insert initial citation " & CStr(i) & "."
+                DocEnd().InsertAfter " "
+            Next i
+            If Not AutomationInsertPendingBibliography() Then Err.Raise 5, , "Could not insert bibliography."
+            If Not AutomationRefresh() Then Err.Raise 5, , "Initial backend refresh failed."
+
+            DocEnd().InsertAfter " "
+            If Not AutomationInsertPendingCitationForKey(AutomationItemKeyAt(initialCount + repetition)) Then _
+                Err.Raise 5, , "Could not append citation."
+            Dim t0 As Double
+            t0 = PerfNow()
+            If Not AutomationRefresh() Then Err.Raise 5, , "Timed backend refresh failed."
+            total = total + PerfElapsed(t0)
+
+            Dim nextLines As Collection
+            Set nextLines = CollectPerfBibliographyLines()
+            If nextLines.Count < 2 Then Err.Raise 5, , "Backend returned too few bibliography lines."
+            Dim pref As Object
+            Set pref = PreferenceEnsure()
+
+            If repetition Mod 2 = 1 Then
+                rowMoveLocalTotal = rowMoveLocalTotal + MeasureRowMovePatch(nextLines, pref)
+                minimalDiffLocalTotal = minimalDiffLocalTotal + MeasureMinimalDiffPatch(nextLines, pref)
+            Else
+                minimalDiffLocalTotal = minimalDiffLocalTotal + MeasureMinimalDiffPatch(nextLines, pref)
+                rowMoveLocalTotal = rowMoveLocalTotal + MeasureRowMovePatch(nextLines, pref)
+            End If
+        Next repetition
+        total = total / repetitions
+        rowMoveLocalTotal = rowMoveLocalTotal / repetitions
+        minimalDiffLocalTotal = minimalDiffLocalTotal / repetitions
+        OutScale "live bibliography append refresh", initialCount, "endToEnd", total
+        OutScale "actual-response bibliography patch", initialCount, "rowMove", rowMoveLocalTotal
+        OutScale "actual-response bibliography patch", initialCount, "minimalDiff", minimalDiffLocalTotal
+        If minimalDiffLocalTotal > 0 Then
+            Out "[INFO] actual-response minimal-diff speedup size=" & CStr(initialCount) & _
+                " value=" & Format$(rowMoveLocalTotal / minimalDiffLocalTotal, "0.00") & "x"
+        End If
+    Next item
+    ResetPerfDocument
+    RunBackendBibliographyPerf = m_report
+    Exit Function
+
+ErrHandler:
+    RunBackendBibliographyPerf = m_report & "[FAIL] testPerf.RunBackendBibliographyPerf: " & Err.Description
+End Function
+
+Private Function MeasureRowMovePatch(ByVal lines As Collection, ByVal pref As Object) As Double
+    ResetPerfDocument
+    InsertActualBibliographyPrefix lines, lines.Count - 1, pref
+    Dim t0 As Double
+    t0 = PerfNow()
+    If Not RowMoveAppendRefresh(lines, pref) Then Err.Raise 5, , "Row-move patch failed."
+    MeasureRowMovePatch = PerfElapsed(t0)
+End Function
+
+Private Function MeasureMinimalDiffPatch(ByVal lines As Collection, ByVal pref As Object) As Double
+    ResetPerfDocument
+    InsertActualBibliographyPrefix lines, lines.Count - 1, pref
+    Dim t0 As Double
+    t0 = PerfNow()
+    If Not RefreshBibliographyLinesInRange(ActiveDocument.Content, lines, pref) Then _
+        Err.Raise 5, , "Minimal-diff patch failed."
+    MeasureMinimalDiffPatch = PerfElapsed(t0)
+End Function
+
+Private Function CollectPerfBibliographyLines() As Collection
+    Dim result As Collection
+    Set result = New Collection
+    Dim fld As Field
+    For Each fld In ActiveDocument.Content.Fields
+        If FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then
+            Dim data As Object
+            Set data = FieldReadData(fld)
+            If FieldIsBibliographyTitle(data) Or FieldIsBibliographyEntry(data) Then result.Add data
+        End If
+    Next fld
+    Set CollectPerfBibliographyLines = result
+End Function
+
+Private Sub InsertActualBibliographyPrefix(ByVal lines As Collection, _
+                                           ByVal lineCount As Long, _
+                                           ByVal pref As Object)
+    Dim cursor As Range
+    Set cursor = DocEnd()
+    Dim i As Long
+    For i = 1 To lineCount
+        Dim data As Object
+        Dim fld As Field
+        Set data = lines(i)
+        Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+        FieldWriteData fld, data
+        RenderPerfBibliographyField fld, data, pref
+        If FieldIsBibliographyEntry(data) Then _
+            FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(data, "id"))
+        Set cursor = fld.Result.Duplicate
+        cursor.Collapse wdCollapseEnd
+        If i < lineCount Then
+            cursor.InsertParagraphAfter
+            cursor.Collapse wdCollapseEnd
+        End If
+    Next i
+End Sub
+
+Private Function RowMoveAppendRefresh(ByVal lines As Collection, ByVal pref As Object) As Boolean
+    On Error GoTo ErrHandler
+    Dim fields As Collection
+    Set fields = New Collection
+    Dim fld As Field
+    For Each fld In ActiveDocument.Content.Fields
+        If FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then
+            fields.Add fld
+        End If
+    Next fld
+    If fields.Count + 1 <> lines.Count Then Exit Function
+
+    Dim i As Long
+    For i = fields.Count - 1 To 1 Step -1
+        Dim leftRange As Range
+        Dim rightRange As Range
+        Set leftRange = PerfWholeFieldRange(fields(i))
+        Set rightRange = PerfWholeFieldRange(fields(i + 1))
+        If rightRange.Start > leftRange.End Then _
+            leftRange.Document.Range(leftRange.End, rightRange.Start).Delete
+    Next i
+
+    Dim cursor As Range
+    Set cursor = PerfWholeFieldRange(fields(1))
+    cursor.Collapse wdCollapseStart
+    For i = 1 To lines.Count
+        Dim data As Object
+        Set data = lines(i)
+        If i <= fields.Count Then
+            Set fld = fields(i)
+            Dim nextJson As String
+            nextJson = JsonStringify(data)
+            If fld.Data <> nextJson Then
+                Dim oldData As Object
+                Set oldData = FieldReadData(fld)
+                Dim renderChanged As Boolean
+                renderChanged = Not FieldContentEquals(oldData, data)
+                FieldWriteData fld, data
+                If renderChanged Then RenderPerfBibliographyField fld, data, pref
+            End If
+        Else
+            Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+            FieldWriteData fld, data
+            RenderPerfBibliographyField fld, data, pref
+        End If
+        If FieldIsBibliographyEntry(data) Then _
+            FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(data, "id"))
+        Set cursor = PerfWholeFieldRange(fld)
+        cursor.Collapse wdCollapseEnd
+        If i < lines.Count Then
+            cursor.InsertAfter vbCr
+            cursor.Collapse wdCollapseEnd
+        End If
+    Next i
+    RowMoveAppendRefresh = True
+    Exit Function
+
+ErrHandler:
+    RowMoveAppendRefresh = False
+End Function
+
+Private Function PerfWholeFieldRange(ByVal fld As Field) As Range
+    Set PerfWholeFieldRange = fld.Result.Document.Range(fld.Code.Start - 1, fld.Result.End + 1)
+End Function
+
+Private Sub RenderPerfBibliographyField(ByVal fld As Field, _
+                                        ByVal data As Object, _
+                                        ByVal pref As Object)
+    If FieldIsBibliographyTitle(data) Then
+        FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyTitleStyle"), wdStyleTypeParagraph, data("content")
+    Else
+        FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, data("content")
+    End If
+End Sub
 
 
 ' --- Production-shaped insert path -----------------------------------------

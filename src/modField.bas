@@ -166,7 +166,12 @@ Public Function FieldRichTextEquals(ByVal currentContent As Object, _
     ' Both values have already passed FieldIsRichText in the collector/response
     ' validators. Read the fixed schema directly here: generic Dict helpers add
     ' measurable overhead for every property of every mark.
-    If CStr(currentContent("text")) <> CStr(nextContent("text")) Then Exit Function
+    Dim currentText As String
+    Dim nextText As String
+    currentText = CStr(currentContent("text"))
+    nextText = CStr(nextContent("text"))
+    If Len(currentText) <> Len(nextText) Then Exit Function
+    If currentText <> nextText Then Exit Function
 
     Dim currentMarks As Object
     Dim nextMarks As Object

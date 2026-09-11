@@ -528,10 +528,6 @@ Private Function RefreshBibliographyInRange(ByVal targetRange As Range, _
     If Not IsCollectionObject(DictKeyObject(respond, "bibliography")) Then Exit Function
     If DictKeyObject(respond, "bibliography").Count = 0 Then Exit Function
 
-    Dim bibliographyFields As Collection
-    Set bibliographyFields = CollectBibliographyFieldsInRange(targetRange)
-    If bibliographyFields.Count = 0 Then Exit Function
-
     Dim lines As Collection
     Set lines = New Collection
 
@@ -544,61 +540,7 @@ Private Function RefreshBibliographyInRange(ByVal targetRange As Range, _
 
     If lines.Count = 0 Then Exit Function
 
-    Dim contentChanged As Boolean
-    Dim metadataChanged As Boolean
-    contentChanged = BibliographyContentChanged(bibliographyFields, lines, pref, metadataChanged)
-    If Not contentChanged Then
-        If metadataChanged Then
-            UpdateBibliographyMetadata bibliographyFields, lines
-            RefreshBibliographyInRange = True
-        End If
-        Exit Function
-    End If
-
-    Dim firstField As Field
-    Set firstField = bibliographyFields(1)
-
-    Dim caret As Range
-    Set caret = firstField.Result.Duplicate
-    caret.Collapse wdCollapseStart
-
-    DeleteExistingBibliography targetRange
-
-    Dim i As Long
-    Dim data As Object
-    Dim fld As Field
-    For i = 1 To lines.Count
-        Set data = lines(i)
-
-        Dim fieldCode As String
-        If FieldIsBibliographyEntry(data) Then
-            fieldCode = "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id")
-        Else
-            fieldCode = "BANYAN_BIBLIOGRAPHY"
-        End If
-
-        Set fld = FieldCreateRawAddinField(caret, fieldCode)
-        If fld Is Nothing Then Exit Function
-
-        FieldWriteData fld, data
-        If FieldIsBibliographyTitle(data) Then
-            FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyTitleStyle"), wdStyleTypeParagraph, data("content")
-        ElseIf FieldIsBibliographyEntry(data) Then
-            FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, data("content")
-            FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(data, "id"))
-        End If
-
-        ' Move caret to end of newly inserted field for next iteration
-        Dim resultEnd As Range
-        Set resultEnd = fld.Result.Duplicate
-        resultEnd.Collapse wdCollapseEnd
-        If i < lines.Count Then
-            resultEnd.InsertParagraphAfter
-            resultEnd.Collapse wdCollapseEnd
-        End If
-        caret.SetRange resultEnd.Start, resultEnd.End
-    Next i
-    RefreshBibliographyInRange = True
+    RefreshBibliographyInRange = RefreshBibliographyLinesInRange(targetRange, lines, pref)
     Exit Function
 
 ErrHandler:
@@ -606,101 +548,389 @@ ErrHandler:
     RefreshBibliographyInRange = False
 End Function
 
-Private Function BibliographyContentChanged(ByVal fields As Collection, _
-                                            ByVal lines As Collection, _
-                                            ByVal pref As Object, _
-                                            ByRef metadataChanged As Boolean) As Boolean
+Public Function RefreshBibliographyLinesInRange(ByVal targetRange As Range, _
+                                                 ByVal lines As Collection, _
+                                                 ByVal pref As Object) As Boolean
     On Error GoTo ErrHandler
-    If fields.Count <> lines.Count Then
-        BibliographyContentChanged = True
+    If targetRange Is Nothing Or lines Is Nothing Or pref Is Nothing Then Exit Function
+    If lines.Count = 0 Then Exit Function
+
+    Dim fields As Collection
+    Set fields = CollectBibliographyFieldsInRange(targetRange)
+    If fields.Count = 0 Then Exit Function
+
+    Dim currentIds As Collection
+    Dim nextPositions As Object
+    If Not BuildBibliographyIndexes(fields, lines, currentIds, nextPositions) Then Exit Function
+
+    Dim structureChanged As Boolean
+    structureChanged = BibliographyStructureChanged(currentIds, lines)
+
+    Dim matchedOld As Collection
+    Dim matchedNext As Collection
+    FindBibliographyMatches currentIds, nextPositions, matchedOld, matchedNext
+
+    If structureChanged Then
+        If matchedOld.Count = 0 Then
+            RefreshBibliographyLinesInRange = ReplaceBibliography(fields, lines, pref)
+            Exit Function
+        End If
+        If Not PatchBibliographyGaps(fields, lines, pref, matchedOld, matchedNext) Then Exit Function
+    End If
+
+    Dim didChange As Boolean
+    Dim i As Long
+    For i = 1 To matchedOld.Count
+        Dim nextData As Object
+        Set nextData = lines(CLng(matchedNext(i)))
+        If UpdateBibliographyField(fields(CLng(matchedOld(i))), nextData, pref) Then
+            didChange = True
+            If FieldIsBibliographyEntry(nextData) Then
+                FieldAddBookmarkToField fields(CLng(matchedOld(i))), _
+                    FieldGetBibliographyBookmarkName(DictKeyString(nextData, "id"))
+            End If
+        End If
+    Next i
+
+    RefreshBibliographyLinesInRange = (structureChanged Or didChange)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.RefreshBibliographyLinesInRange"
+    RefreshBibliographyLinesInRange = False
+End Function
+
+Private Function BuildBibliographyIndexes(ByVal fields As Collection, _
+                                           ByVal lines As Collection, _
+                                           ByRef currentIds As Collection, _
+                                           ByRef nextPositions As Object) As Boolean
+    On Error GoTo ErrHandler
+    Set currentIds = New Collection
+    Set nextPositions = New Dictionary
+
+    Dim i As Long
+    Dim data As Object
+    Dim lineId As String
+    For i = 1 To lines.Count
+        Set data = lines(i)
+        lineId = Trim$(DictKeyString(data, "id"))
+        If Len(lineId) = 0 Or nextPositions.Exists(lineId) Then Exit Function
+        nextPositions(lineId) = i
+    Next i
+
+    Dim currentIdIndex As Object
+    Set currentIdIndex = New Dictionary
+    For i = 1 To fields.Count
+        lineId = BibliographyFieldId(fields(i))
+        If Len(lineId) = 0 Or currentIdIndex.Exists(lineId) Then Exit Function
+        currentIdIndex(lineId) = True
+        currentIds.Add lineId
+    Next i
+
+    BuildBibliographyIndexes = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.BuildBibliographyIndexes"
+    BuildBibliographyIndexes = False
+End Function
+
+Private Function BibliographyFieldId(ByVal fld As Field) As String
+    On Error GoTo ErrHandler
+    Const CODE_PREFIX As String = "ADDIN BANYAN_BIBLIOGRAPHY "
+    Dim codeText As String
+    codeText = Trim$(fld.Code.Text)
+    If StrComp(Left$(codeText, Len(CODE_PREFIX)), CODE_PREFIX, vbTextCompare) <> 0 Then Exit Function
+    BibliographyFieldId = Trim$(Mid$(codeText, Len(CODE_PREFIX) + 1))
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.BibliographyFieldId"
+    BibliographyFieldId = ""
+End Function
+
+Private Sub FindBibliographyMatches(ByVal currentIds As Collection, _
+                                    ByVal nextPositions As Object, _
+                                    ByRef matchedOld As Collection, _
+                                    ByRef matchedNext As Collection)
+    Set matchedOld = New Collection
+    Set matchedNext = New Collection
+
+    Dim commonCount As Long
+    Dim i As Long
+    For i = 1 To currentIds.Count
+        If nextPositions.Exists(CStr(currentIds(i))) Then commonCount = commonCount + 1
+    Next i
+    If commonCount = 0 Then Exit Sub
+
+    Dim sequence() As Long
+    Dim oldIndexes() As Long
+    Dim previous() As Long
+    Dim tails() As Long
+    Dim tailSequenceIndexes() As Long
+    ReDim sequence(1 To commonCount)
+    ReDim oldIndexes(1 To commonCount)
+    ReDim previous(1 To commonCount)
+    ReDim tails(1 To commonCount)
+    ReDim tailSequenceIndexes(1 To commonCount)
+
+    Dim sequenceIndex As Long
+    For i = 1 To currentIds.Count
+        Dim lineId As String
+        lineId = CStr(currentIds(i))
+        If nextPositions.Exists(lineId) Then
+            sequenceIndex = sequenceIndex + 1
+            sequence(sequenceIndex) = CLng(nextPositions(lineId))
+            oldIndexes(sequenceIndex) = i
+        End If
+    Next i
+
+    Dim lisLength As Long
+    For sequenceIndex = 1 To commonCount
+        Dim low As Long
+        Dim high As Long
+        low = 1
+        high = lisLength
+        Do While low <= high
+            Dim middle As Long
+            middle = (low + high) \ 2
+            If tails(middle) < sequence(sequenceIndex) Then
+                low = middle + 1
+            Else
+                high = middle - 1
+            End If
+        Loop
+
+        Dim lengthAtItem As Long
+        lengthAtItem = low
+        tails(lengthAtItem) = sequence(sequenceIndex)
+        tailSequenceIndexes(lengthAtItem) = sequenceIndex
+        If lengthAtItem > 1 Then previous(sequenceIndex) = tailSequenceIndexes(lengthAtItem - 1)
+        If lengthAtItem > lisLength Then lisLength = lengthAtItem
+    Next sequenceIndex
+
+    Dim reverseOld() As Long
+    Dim reverseNext() As Long
+    ReDim reverseOld(1 To lisLength)
+    ReDim reverseNext(1 To lisLength)
+    sequenceIndex = tailSequenceIndexes(lisLength)
+    For i = lisLength To 1 Step -1
+        reverseOld(i) = oldIndexes(sequenceIndex)
+        reverseNext(i) = sequence(sequenceIndex)
+        sequenceIndex = previous(sequenceIndex)
+    Next i
+    For i = 1 To lisLength
+        matchedOld.Add reverseOld(i)
+        matchedNext.Add reverseNext(i)
+    Next i
+End Sub
+
+Private Function BibliographyStructureChanged(ByVal currentIds As Collection, _
+                                               ByVal lines As Collection) As Boolean
+    If currentIds.Count <> lines.Count Then
+        BibliographyStructureChanged = True
         Exit Function
     End If
 
     Dim i As Long
-    Dim currentData As Object
-    Dim nextData As Object
     For i = 1 To lines.Count
-        Set currentData = FieldReadData(fields(i))
-        Set nextData = lines(i)
-        If currentData Is Nothing Then
-            BibliographyContentChanged = True
+        If CStr(currentIds(i)) <> DictKeyString(lines(i), "id") Then
+            BibliographyStructureChanged = True
             Exit Function
-        End If
-        If Not FieldContentEquals(currentData, nextData) Then
-            BibliographyContentChanged = True
-            Exit Function
-        End If
-        If Not BibliographyFieldIdentityEquals(currentData, nextData) Then
-            BibliographyContentChanged = True
-            Exit Function
-        End If
-        If Not BibliographyStyleEquals(fields(i), nextData, pref) Then
-            BibliographyContentChanged = True
-            Exit Function
-        End If
-        If Not FieldDataEquals(currentData, nextData) Then
-            metadataChanged = True
         End If
     Next i
+End Function
+
+Private Function UpdateBibliographyField(ByVal fld As Field, _
+                                          ByVal nextData As Object, _
+                                          ByVal pref As Object) As Boolean
+    On Error GoTo ErrHandler
+    Dim nextJson As String
+    nextJson = JsonStringify(nextData)
+    If Len(nextJson) = 0 Then Exit Function
+    If fld.Data = nextJson Then Exit Function
+
+    Dim currentData As Object
+    Set currentData = FieldReadData(fld)
+    If currentData Is Nothing Then Exit Function
+    Dim renderChanged As Boolean
+    renderChanged = Not FieldContentEquals(currentData, nextData)
+
+    If Not FieldWriteData(fld, nextData) Then Exit Function
+    UpdateBibliographyField = True
+
+    If renderChanged Then
+        If FieldIsBibliographyTitle(nextData) Then
+            FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyTitleStyle"), wdStyleTypeParagraph, nextData("content")
+        Else
+            FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, nextData("content")
+        End If
+        UpdateBibliographyField = True
+    End If
     Exit Function
 
 ErrHandler:
-    DiagnosticsReraiseIfDev "modRefresh.BibliographyContentChanged"
-    BibliographyContentChanged = True
+    DiagnosticsReraiseIfDev "modRefresh.UpdateBibliographyField"
+    UpdateBibliographyField = False
 End Function
 
-Private Function BibliographyStyleEquals(ByVal fld As Field, _
-                                         ByVal data As Object, _
-                                         ByVal pref As Object) As Boolean
+Private Function CreateBibliographyFieldAtRange(ByVal targetRange As Range, _
+                                                 ByVal data As Object) As Field
+    Set CreateBibliographyFieldAtRange = FieldCreateRawAddinField( _
+        targetRange, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+End Function
+
+Private Function BibliographyWholeFieldRange(ByVal fld As Field) As Range
     On Error GoTo ErrHandler
-
-    Dim expectedStyle As String
-    If FieldIsBibliographyTitle(data) Then
-        expectedStyle = DictKeyString(pref, "bibliographyTitleStyle")
-    Else
-        expectedStyle = DictKeyString(pref, "bibliographyEntryStyle")
-    End If
-    If Len(expectedStyle) = 0 Then Exit Function
-
-    BibliographyStyleEquals = (fld.Result.Style.NameLocal = expectedStyle)
+    Set BibliographyWholeFieldRange = fld.Result.Document.Range(fld.Code.Start - 1, fld.Result.End + 1)
     Exit Function
 
 ErrHandler:
-    DiagnosticsReraiseIfDev "modRefresh.BibliographyStyleEquals"
-    BibliographyStyleEquals = False
+    DiagnosticsReraiseIfDev "modRefresh.BibliographyWholeFieldRange"
+    Set BibliographyWholeFieldRange = Nothing
 End Function
 
-Private Function BibliographyFieldIdentityEquals(ByVal currentData As Object, _
-                                                 ByVal nextData As Object) As Boolean
-    If FieldIsBibliographyTitle(currentData) And FieldIsBibliographyTitle(nextData) Then
-        BibliographyFieldIdentityEquals = True
-    ElseIf FieldIsBibliographyEntry(currentData) And FieldIsBibliographyEntry(nextData) Then
-        BibliographyFieldIdentityEquals = (DictKeyString(currentData, "id") = DictKeyString(nextData, "id"))
-    End If
-End Function
-
-Private Sub UpdateBibliographyMetadata(ByVal fields As Collection, _
-                                       ByVal lines As Collection)
+Private Function PatchBibliographyGaps(ByVal fields As Collection, _
+                                       ByVal lines As Collection, _
+                                       ByVal pref As Object, _
+                                       ByVal matchedOld As Collection, _
+                                       ByVal matchedNext As Collection) As Boolean
     On Error GoTo ErrHandler
+    Dim gap As Long
+    For gap = matchedOld.Count To 0 Step -1
+        Dim previousOld As Long
+        Dim previousNext As Long
+        Dim followingOld As Long
+        Dim followingNext As Long
+        If gap = 0 Then
+            previousOld = 0
+            previousNext = 0
+        Else
+            previousOld = CLng(matchedOld(gap))
+            previousNext = CLng(matchedNext(gap))
+        End If
+        If gap = matchedOld.Count Then
+            followingOld = fields.Count + 1
+            followingNext = lines.Count + 1
+        Else
+            followingOld = CLng(matchedOld(gap + 1))
+            followingNext = CLng(matchedNext(gap + 1))
+        End If
 
+        Dim oldGapCount As Long
+        Dim nextGapCount As Long
+        oldGapCount = followingOld - previousOld - 1
+        nextGapCount = followingNext - previousNext - 1
+        If oldGapCount = 0 And nextGapCount = 0 Then GoTo NextGap
+
+        Dim gapStart As Long
+        Dim gapEnd As Long
+        If previousOld = 0 Then
+            gapStart = BibliographyWholeFieldRange(fields(1)).Start
+        Else
+            gapStart = BibliographyWholeFieldRange(fields(previousOld)).End
+        End If
+        If followingOld = fields.Count + 1 Then
+            gapEnd = BibliographyWholeFieldRange(fields(fields.Count)).End
+        Else
+            gapEnd = BibliographyWholeFieldRange(fields(followingOld)).Start
+        End If
+
+        Dim cursor As Range
+        Set cursor = fields(1).Result.Document.Range(gapStart, gapEnd)
+        cursor.Delete
+        cursor.Collapse wdCollapseStart
+        If Not InsertBibliographyLines(cursor, lines, previousNext + 1, followingNext - 1, pref, _
+                                       previousOld > 0, _
+                                       followingOld <= fields.Count And nextGapCount > 0) Then Exit Function
+NextGap:
+    Next gap
+
+    PatchBibliographyGaps = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.PatchBibliographyGaps"
+    PatchBibliographyGaps = False
+End Function
+
+Private Function ReplaceBibliography(ByVal fields As Collection, _
+                                     ByVal lines As Collection, _
+                                     ByVal pref As Object) As Boolean
+    On Error GoTo ErrHandler
+    Dim caret As Range
+    Set caret = BibliographyWholeFieldRange(fields(1))
+    caret.Collapse wdCollapseStart
+
+    Dim blockEnd As Range
+    Set blockEnd = BibliographyWholeFieldRange(fields(fields.Count))
+    caret.Document.Range(caret.Start, blockEnd.End).Delete
+    If Not InsertBibliographyLines(caret, lines, 1, lines.Count, pref, False, False) Then Exit Function
+    ReplaceBibliography = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.ReplaceBibliography"
+    ReplaceBibliography = False
+End Function
+
+Private Function InsertBibliographyLines(ByVal cursor As Range, _
+                                         ByVal lines As Collection, _
+                                         ByVal firstIndex As Long, _
+                                         ByVal lastIndex As Long, _
+                                         ByVal pref As Object, _
+                                         ByVal separatorBeforeFirst As Boolean, _
+                                         ByVal separatorAfterLast As Boolean) As Boolean
+    On Error GoTo ErrHandler
     Dim i As Long
-    Dim currentData As Object
-    Dim nextData As Object
-    For i = 1 To lines.Count
-        Set currentData = FieldReadData(fields(i))
-        Set nextData = lines(i)
-        If Not FieldDataEquals(currentData, nextData) Then
-            FieldWriteData fields(i), nextData
-            If FieldIsBibliographyEntry(nextData) Then
-                FieldAddBookmarkToField fields(i), FieldGetBibliographyBookmarkName(DictKeyString(nextData, "id"))
-            End If
+    For i = firstIndex To lastIndex
+        If separatorBeforeFirst Or i > firstIndex Then
+            cursor.InsertAfter vbCr
+            cursor.Collapse wdCollapseEnd
         End If
+
+        Dim data As Object
+        Dim fld As Field
+        Set data = lines(i)
+        Set fld = CreateBibliographyFieldAtRange(cursor, data)
+        If fld Is Nothing Then Exit Function
+        If Not InitializeBibliographyField(fld, data, pref) Then Exit Function
+        If FieldIsBibliographyEntry(data) Then
+            FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(data, "id"))
+        End If
+        Set cursor = BibliographyWholeFieldRange(fld)
+        cursor.Collapse wdCollapseEnd
     Next i
-    Exit Sub
+    If separatorAfterLast Then
+        cursor.InsertAfter vbCr
+        cursor.Collapse wdCollapseEnd
+    End If
+    InsertBibliographyLines = True
+    Exit Function
 
 ErrHandler:
-    DiagnosticsReraiseIfDev "modRefresh.UpdateBibliographyMetadata"
-End Sub
+    DiagnosticsReraiseIfDev "modRefresh.InsertBibliographyLines"
+    InsertBibliographyLines = False
+End Function
+
+Private Function InitializeBibliographyField(ByVal fld As Field, _
+                                              ByVal data As Object, _
+                                              ByVal pref As Object) As Boolean
+    On Error GoTo ErrHandler
+    If Not FieldWriteData(fld, data) Then Exit Function
+    If FieldIsBibliographyTitle(data) Then
+        InitializeBibliographyField = FieldRenderStyledFieldWithStyle( _
+            fld, DictKeyString(pref, "bibliographyTitleStyle"), wdStyleTypeParagraph, data("content"))
+    Else
+        InitializeBibliographyField = FieldRenderStyledFieldWithStyle( _
+            fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, data("content"))
+    End If
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.InitializeBibliographyField"
+    InitializeBibliographyField = False
+End Function
 
 Private Function DeleteExistingBibliography(ByVal targetRange As Range) As Boolean
     On Error GoTo ErrHandler
@@ -735,14 +965,10 @@ Private Function CollectBibliographyFieldsInRange(ByVal targetRange As Range) As
     Set result = New Collection
 
     Dim fld As Field
-    Dim data As Object
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
             If Not FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then GoTo NextBibliographyField
-            Set data = FieldReadData(fld)
-            If FieldIsBibliographyTitle(data) Or FieldIsBibliographyEntry(data) Then
-                result.Add fld
-            End If
+            result.Add fld
         End If
 NextBibliographyField:
     Next fld
