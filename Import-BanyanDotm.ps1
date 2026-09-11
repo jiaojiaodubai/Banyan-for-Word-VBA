@@ -94,6 +94,7 @@ $moduleFiles = @(
     "src\modFinalize.bas",
     "src\frmSettings.frm",
     "src\modBusinessLogic.bas",
+    "src\modAutomation.bas",
     "src\modRibbonCallbacks.bas",
     "src\modTest.bas",
     "test\testI10n.bas",

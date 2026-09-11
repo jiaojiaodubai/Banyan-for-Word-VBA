@@ -75,6 +75,7 @@ The rest of this file is for people building, extending, or testing the add-in f
 | `src/*.bas`, `src/*.cls`, `src/*.frm` (+ `.frx`) | Exported VBA source modules (see table below). |
 | `test/test*.bas` | Per-module test suites (`testI10n`, `testJson`, `testDict`, `testHttp`, `testPreference`, `testField`). |
 | `test/Run-Tests.ps1` | Full-suite dev gate: COM-injects all src + test modules and requires every test to pass. |
+| `test/Run-Flow.ps1` | Live end-to-end agent flow; needs a running backend (not part of the dev gate). |
 | `Import-BanyanDotm.ps1` | **Build script**: imports all VBA source into `Banyan.dotm` (release by default, `-DevMode` for a debug build). |
 | `Verify-VbaImport.ps1` | Imports modules into a temporary Word document as a compile/import smoke test (src + all test modules). |
 | `GenerateSettingsForm.ps1` | Rebuilds the settings UserForm through the VBIDE designer. |
@@ -102,6 +103,7 @@ The rest of this file is for people building, extending, or testing the add-in f
 | `modConvert.bas` | Convert Zotero ADDIN fields to Banyan fields. |
 | `modFinalize.bas` | Backup, refresh, unlink citations/bibliography, and remove ChapterBreak fields. |
 | `modBusinessLogic.bas` | Settings command and shared command helpers. |
+| `modAutomation.bas` | Agent/COM automation tools: style binding, item fetch (Zotero local API), pending citation/bibliography inserts, dialog-free refresh. |
 | `modRibbonCallbacks.bas` | Ribbon XML callback entry points. |
 | `modTest.bas` | Concise in-editor test aggregator (pulls a smoke set from `test/*`) + the `DEV_MODE` switch used by debug builds. |
 
@@ -168,6 +170,7 @@ Other dev commands:
 ```
 
   It COM-injects all `src` + `test` modules into a throwaway document, runs every `test*` module's `RunTests()`, and exits non-zero on any failure (the VBA equivalent of "lint + mocha" in a TS project). `testField` mutates the document, so it runs last. The gate imports `modTest.bas` with `DEV_MODE = True`, so dev-mode re-raises stay active and swallowed bugs fail loudly.
+- **Live flow runner:** `test\Run-Flow.ps1` drives `modAutomation` end to end (style -> item snapshot -> pending citation/bibliography -> refresh, with rich-text assertions and a second refresh for idempotency). It needs a running backend and is not part of the dev gate.
 - **Import `.cls` class modules through the shared encoding pipeline - never import a raw source file
   directly.** A raw `VBComponents.Import` of `src/Dictionary.cls` can create a STANDARD module, so its
   `VERSION 1.0 CLASS` / `BEGIN` / `END` header lines become ordinary code and the whole project fails to
@@ -203,6 +206,15 @@ Other dev commands:
 - Keep module-level comments useful: the module header explains ownership and public API; internal sections use `' --- Section ---`.
 - Use ASCII punctuation in code comments unless Chinese UI strings or external text require otherwise.
 - Do not hand-edit `frmSettings.frx`. Rebuild the UserForm through `GenerateSettingsForm.ps1`.
+
+#### Automation tools (`modAutomation`)
+
+`modAutomation` is the agent-facing entry point set (callable through `Application.Run`):
+`AutomationStyleList` / `AutomationStyleApply` / `AutomationPreferenceStyleId` (styles),
+`AutomationItemsSnapshot` / `AutomationItem*` / `AutomationCitationSource` (items),
+`AutomationInsertPendingCitation*` / `AutomationInsertPendingBibliography` / `AutomationRefresh`
+(pending fields and refresh). The module header documents the API and the two GUI routes it avoids;
+every function returns `False`/`Nothing`/`""` instead of showing a dialog.
 
 #### Dictionary safety (`modDict`)
 

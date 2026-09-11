@@ -63,6 +63,7 @@ $srcFiles = @(
     "src\modConvert.bas",
     "src\modFinalize.bas",
     "src\modBusinessLogic.bas",
+    "src\modAutomation.bas",
     "src\modRibbonCallbacks.bas",
     "src\modTest.bas"
 )

@@ -8,11 +8,11 @@ Option Explicit
 '   macOS   - curl via shared ShellExec - no external scripts required
 '
 ' Public API:
-'   HttpPost(url, body, headers)  -> response text ("" on error)
-'   HttpGet(url)                  -> response text ("" on error)
-'   HttpGetPort()                 -> fixed local server port
-'   HttpGetBaseUrl()              -> "http://127.0.0.1:<port>/banyan"
-'   IsMac()                       -> platform detection
+'   HttpPost(url, body, headers) -> response text ("" on error)
+'   HttpGet(url, headers)        -> response text ("" on error)
+'   HttpGetPort()                -> fixed local server port
+'   HttpGetBaseUrl()             -> "http://127.0.0.1:<port>/banyan"
+'   IsMac()                      -> platform detection
 '
 ' Cross-platform approach inspired by VBA-Web:
 '   - WinHTTP error -> offline-detection pattern (ref: WebClient.cls)
@@ -86,11 +86,15 @@ End Function
 
 
 ' --- HttpGet - Send a GET request. ---
+' url     - Full URL (e.g. "http://127.0.0.1:23119/api/users/0/items")
+' headers - Optional late-bound Dictionary of extra header name->value pairs
+' Default headers (Zotero-Allowed-Request, X-Banyan-Client) are always set;
+' Zotero's server rejects MSXML requests without them.
 
-Public Function HttpGet(ByVal url As String) As String
+Public Function HttpGet(ByVal url As String, Optional ByVal headers As Variant) As String
     m_lastError = ""
     m_lastTransportError = False
-    HttpGet = HttpGetOnce(url)
+    HttpGet = HttpGetOnce(url, headers)
 
     If m_lastTransportError Then
         Dim retryUrl As String
@@ -98,7 +102,7 @@ Public Function HttpGet(ByVal url As String) As String
         If Len(retryUrl) > 0 Then
             m_lastError = ""
             m_lastTransportError = False
-            HttpGet = HttpGetOnce(retryUrl)
+            HttpGet = HttpGetOnce(retryUrl, headers)
             If Not m_lastTransportError Then RememberPort retryUrl
         End If
     Else
@@ -106,11 +110,11 @@ Public Function HttpGet(ByVal url As String) As String
     End If
 End Function
 
-Private Function HttpGetOnce(ByVal url As String) As String
+Private Function HttpGetOnce(ByVal url As String, ByVal headers As Variant) As String
     If IsMac() Then
-        HttpGetOnce = HttpGetMac(url)
+        HttpGetOnce = HttpGetMac(url, headers)
     Else
-        HttpGetOnce = HttpGetWin(url)
+        HttpGetOnce = HttpGetWin(url, headers)
     End If
 End Function
 
@@ -154,14 +158,21 @@ ErrHandler:
 End Function
 
 
-Private Function HttpGetWin(ByVal url As String) As String
+Private Function HttpGetWin(ByVal url As String, ByVal headers As Variant) As String
     On Error GoTo ErrHandler
 
     Dim http As Object
     Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
 
     http.setTimeouts HTTP_RESOLVE_TIMEOUT_MS, HTTP_CONNECT_TIMEOUT_MS, HTTP_SEND_TIMEOUT_MS, HTTP_RECEIVE_TIMEOUT_MS
+
     http.Open "GET", CleanUrl(url), False
+
+    ' Handshake headers required by Zotero's server (see this function's docs).
+    http.setRequestHeader "Zotero-Allowed-Request", "1"
+    http.setRequestHeader "X-Banyan-Client", "Banyan for Word VBA"
+
+    ApplyHeaders http, headers
 
     http.send
 
@@ -235,11 +246,33 @@ Private Function HttpPostMac(ByVal url As String, _
 End Function
 
 
-Private Function HttpGetMac(ByVal url As String) As String
+Private Function HttpGetMac(ByVal url As String, ByVal headers As Variant) As String
     Dim cmd As String
     ' Pipe the response through base64 so non-ASCII text is not mangled across
     ' the shell boundary; decode back to Unicode in VBA.
-    cmd = "curl -s " & QuoteArg(url) & " --connect-timeout 10 --max-time 300 | base64"
+    cmd = "curl -s " & QuoteArg(url) & _
+          " -H 'Zotero-Allowed-Request: 1'" & _
+          " -H 'X-Banyan-Client: Banyan for Word VBA'"
+
+    ' Append extra headers (read via modDict - safe accessor, see README)
+    On Error Resume Next
+    If Not IsMissing(headers) Then
+        If Not IsEmpty(headers) Then
+            If Not headers Is Nothing Then
+                Dim hdrs As Object
+                Set hdrs = headers
+                If Not hdrs Is Nothing Then
+                    Dim key As Variant
+                    For Each key In hdrs.Keys
+                        cmd = cmd & " -H '" & CStr(key) & ": " & DictKeyString(hdrs, CStr(key)) & "'"
+                    Next key
+                End If
+            End If
+        End If
+    End If
+    On Error GoTo 0
+
+    cmd = cmd & " --connect-timeout 10 --max-time 300 | base64"
     HttpGetMac = HttpDecodeUtf8B64(ShellExec(cmd))
     If Len(HttpGetMac) = 0 Then
         m_lastTransportError = True
