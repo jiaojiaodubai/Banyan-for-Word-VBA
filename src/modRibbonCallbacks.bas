@@ -31,20 +31,8 @@ Public Sub OnRibbonLoad(ribbon As IRibbonUI)
     EnsureRibbonI10n
 End Sub
 
-Public Sub OnRiibonLoad(ribbon As IRibbonUI)
-    ' Backward-compatible wrapper for older Ribbon.xml builds that used this typo.
-    OnRibbonLoad ribbon
-End Sub
-
 
 ' --- Invalidation helpers ---
-
-Public Sub InvalidateRibbon()
-    ' Refreshes ALL controls (forces all get-callbacks to re-run).
-    If Not m_oRibbon Is Nothing Then
-        m_oRibbon.Invalidate
-    End If
-End Sub
 
 Public Sub InvalidateControl(ByVal controlID As String)
     ' Refreshes a single control (forces its get-callbacks to re-run).

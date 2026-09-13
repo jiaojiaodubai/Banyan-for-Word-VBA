@@ -34,8 +34,6 @@ Private Const DEFAULT_BIB_ENTRY_STYLE_ZH As String = "文献列表题录"
 Private Const DEFAULT_BIB_TITLE_STYLE_EN As String = "Bibliography Title"
 Private Const DEFAULT_BIB_ENTRY_STYLE_EN As String = "Bibliography Entry"
 
-Private m_lastSaveError As String
-
 
 ' --- PreferenceInit - retained for callers that initialize modules uniformly. ---
 
@@ -84,12 +82,7 @@ End Function
 
 Public Function PreferenceSave(ByVal pref As Object) As Boolean
     PreferenceInit
-    m_lastSaveError = ""
     PreferenceSave = SavePreferenceInternal(pref)
-End Function
-
-Public Function PreferenceGetLastSaveError() As String
-    PreferenceGetLastSaveError = m_lastSaveError
 End Function
 
 
@@ -194,7 +187,6 @@ Private Function SavePreferenceInternal(ByVal pref As Object) As Boolean
     Exit Function
 ErrHandler:
     DiagnosticsReraiseIfDev "modPreference.SavePreferenceInternal"
-    SetLastSaveError "PreferenceSave", Err.Number, Err.Source, Err.Description, Erl
     SavePreferenceInternal = False
 End Function
 
@@ -208,34 +200,24 @@ Private Function SaveChapterBreakPrefs(ByVal chBreak As Collection, ByVal pref A
     Dim fld As Field
     Set fld = chBreak("field")
 
-    If fld Is Nothing Then
-        SetLastSaveFailure "SaveChapterBreakPrefs", "Chapter break field is missing."
-        Exit Function
-    End If
+    If fld Is Nothing Then Exit Function
 
     ' Read current data, update chapter-level fields
     Dim data As Object
-    Set data = ReadFieldData(fld)
-    If data Is Nothing Then
-        SetLastSaveFailure "SaveChapterBreakPrefs", "Unable to read chapter break field data."
-        Exit Function
-    End If
+    Set data = FieldReadData(fld)
+    If data Is Nothing Then Exit Function
 
     Set data("style") = pref("style")
     data("bibliographyTitleStyle") = pref("bibliographyTitleStyle")
     data("bibliographyEntryStyle") = pref("bibliographyEntryStyle")
     CopyOptionalExtraSourceToChapterBreak data, pref
 
-    If Not WriteFieldData(fld, data) Then
-        SetLastSaveFailure "SaveChapterBreakPrefs", "Unable to write chapter break field data."
-        Exit Function
-    End If
+    If Not FieldWriteData(fld, data) Then Exit Function
 
     SaveChapterBreakPrefs = True
     Exit Function
 ErrHandler:
     DiagnosticsReraiseIfDev "modPreference.SaveChapterBreakPrefs"
-    SetLastSaveError "SaveChapterBreakPrefs", Err.Number, Err.Source, Err.Description, Erl
     SaveChapterBreakPrefs = False
 End Function
 
@@ -426,17 +408,11 @@ End Function
 Private Function SaveDocumentProperty(ByVal pref As Object) As Boolean
     On Error GoTo ErrHandler
 
-    If Not NormalizePreference(pref) Then
-        SetLastSaveFailure "SaveDocumentProperty", "Invalid preference data."
-        Exit Function
-    End If
+    If Not NormalizePreference(pref) Then Exit Function
 
     Dim value As String
     value = JsonStringify(pref)
-    If Len(value) = 0 Then
-        SetLastSaveFailure "SaveDocumentProperty", "Unable to serialize preference JSON."
-        Exit Function
-    End If
+    If Len(value) = 0 Then Exit Function
 
     On Error Resume Next
     ActiveDocument.CustomDocumentProperties(PREFERENCE_PROPERTY).Value = value
@@ -456,7 +432,6 @@ Private Function SaveDocumentProperty(ByVal pref As Object) As Boolean
     Exit Function
 ErrHandler:
     DiagnosticsReraiseIfDev "modPreference.SaveDocumentProperty"
-    SetLastSaveError "SaveDocumentProperty", Err.Number, Err.Source, Err.Description, Erl
     SaveDocumentProperty = False
 End Function
 
@@ -508,7 +483,7 @@ Private Sub CopyOptionalExtraSourceToChapterBreak(ByVal data As Object, ByVal pr
     On Error GoTo ClearExtraSource
 
     If Not DictKeyIsObject(pref, "extraSource") Then GoTo ClearExtraSource
-    If Not IsCitationSource(DictKeyObject(pref, "extraSource")) Then GoTo ClearExtraSource
+    If Not FieldIsCitationSource(DictKeyObject(pref, "extraSource")) Then GoTo ClearExtraSource
 
     Set data("extraSource") = DictKeyObject(pref, "extraSource")
     Exit Sub
@@ -538,38 +513,11 @@ Private Function SerializeExtraSource(ByVal pref As Object) As String
         SerializeExtraSource = ""
         Exit Function
     End If
-    If Not IsCitationSource(DictKeyObject(pref, "extraSource")) Then
+    If Not FieldIsCitationSource(DictKeyObject(pref, "extraSource")) Then
         SerializeExtraSource = ""
         Exit Function
     End If
     SerializeExtraSource = JsonStringify(DictKeyObject(pref, "extraSource"))
-End Function
-
-
-' --- Save diagnostics ---
-
-Private Sub SetLastSaveFailure(ByVal source As String, ByVal description As String)
-    m_lastSaveError = "Source: " & source & vbCrLf & _
-                      "Description: " & description
-End Sub
-
-Private Sub SetLastSaveError(ByVal scope As String, _
-                             ByVal errNumber As Long, _
-                             ByVal errSource As String, _
-                             ByVal errDescription As String, _
-                             ByVal errLine As Long)
-    m_lastSaveError = DiagnosticErrorText(errNumber, _
-                                          NonEmptyText(errSource, scope), _
-                                          errDescription, _
-                                          errLine)
-End Sub
-
-Private Function NonEmptyText(ByVal value As String, ByVal fallback As String) As String
-    If Len(value) > 0 Then
-        NonEmptyText = value
-    Else
-        NonEmptyText = fallback
-    End If
 End Function
 
 

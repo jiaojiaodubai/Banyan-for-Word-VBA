@@ -342,11 +342,11 @@ Private Function ExtractBibliographyLines(ByVal response As Object) As Collectio
     Dim result As Collection
     Set result = New Collection
 
-    If Not HasDictionaryKey(response, "bibliography") Then
+    If Not DictHasKey(response, "bibliography") Then
         Set ExtractBibliographyLines = result
         Exit Function
     End If
-    If Not IsCollectionObject(response("bibliography")) Then
+    If Not DictIsCollection(response("bibliography")) Then
         Set ExtractBibliographyLines = result
         Exit Function
     End If
@@ -379,7 +379,7 @@ Private Sub EditBibliographyEntry(ByVal fld As Field, ByVal pref As Object)
         Exit Sub
     End If
 
-    If Not HasDictionaryKey(response, "line") Then
+    If Not DictHasKey(response, "line") Then
         MsgBox BText("invalidBibliographyLine", "Invalid bibliography data returned by server."), vbExclamation
         Exit Sub
     End If
@@ -390,22 +390,17 @@ Private Sub EditBibliographyEntry(ByVal fld As Field, ByVal pref As Object)
 
     Dim updatedLine As Object
     Set updatedLine = response("line")
+    ' Only the render depends on the content. Persisting the returned line and
+    ' refreshing the bookmark are cheap and keep Field.Data and the hyperlink
+    ' target in sync with the server, so they run unconditionally.
     Dim contentChanged As Boolean
     contentChanged = Not FieldContentEquals(currentLine, updatedLine)
-    Dim dataChanged As Boolean
-    If contentChanged Then
-        dataChanged = True
-    Else
-        dataChanged = Not FieldDataEquals(currentLine, updatedLine)
-    End If
-    If dataChanged Then FieldWriteData fld, updatedLine
 
+    FieldWriteData fld, updatedLine
     If contentChanged Then
         FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), wdStyleTypeParagraph, DictKeyObject(updatedLine, "content")
     End If
-    If dataChanged Then
-        FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(updatedLine, "id"))
-    End If
+    FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(DictKeyString(updatedLine, "id"))
 
     SaveReturnedExtraSource pref, response
 End Sub
@@ -488,7 +483,7 @@ End Sub
 
 Private Sub AddContextById(ByVal byId As Object, ByVal context As Object)
     If context Is Nothing Then Exit Sub
-    If Not HasDictionaryKey(context, "id") Then Exit Sub
+    If Not DictHasKey(context, "id") Then Exit Sub
 
     Dim contextId As String
     contextId = DictKeyString(context, "id")
@@ -504,8 +499,8 @@ Private Function BuildCitationContext(ByVal fld As Field, ByVal data As Object) 
     Dim context As Object
     Set context = New Dictionary
 
-    If Not HasDictionaryKey(data, "source") Then Exit Function
-    If Not IsDictionaryRecord(data("source")) Then Exit Function
+    If Not DictHasKey(data, "source") Then Exit Function
+    If Not DictIsDictionary(data("source")) Then Exit Function
 
     Dim source As Object
     Set source = data("source")
@@ -562,13 +557,13 @@ Private Function RequestRefresh(ByVal style As Object, _
         Exit Function
     End If
 
-    If Not HasDictionaryKey(envelope, "data") Then Exit Function
-    If Not IsDictionaryRecord(envelope("data")) Then Exit Function
+    If Not DictHasKey(envelope, "data") Then Exit Function
+    If Not DictIsDictionary(envelope("data")) Then Exit Function
 
     Dim data As Object
     Set data = envelope("data")
-    If Not HasDictionaryKey(data, "bibliography") Then Exit Function
-    If Not IsCollectionObject(data("bibliography")) Then Exit Function
+    If Not DictHasKey(data, "bibliography") Then Exit Function
+    If Not DictIsCollection(data("bibliography")) Then Exit Function
 
     Set RequestRefresh = data
     Exit Function
@@ -697,14 +692,3 @@ End Function
 
 ' --- Small helpers ---
 
-Private Function IsDictionaryRecord(ByVal value As Variant) As Boolean
-    IsDictionaryRecord = DictIsDictionary(value)
-End Function
-
-Private Function IsCollectionObject(ByVal value As Variant) As Boolean
-    IsCollectionObject = DictIsCollection(value)
-End Function
-
-Private Function HasDictionaryKey(ByVal dict As Object, ByVal key As String) As Boolean
-    HasDictionaryKey = DictHasKey(dict, key)
-End Function

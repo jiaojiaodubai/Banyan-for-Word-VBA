@@ -67,8 +67,6 @@ Option Explicit
 
 ' --- Self checks ------------------------------------------------------------
 ' These inspect the passed `value` itself (not a key inside a dictionary).
-' They are the safe replacements for the IsDictionaryRecord / IsCollectionObject
-' helpers found in modField and modChapterBreak.
 
 Public Function DictIsDictionary(ByVal value As Variant) As Boolean
     On Error GoTo ErrHandler

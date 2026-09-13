@@ -261,8 +261,8 @@ Private Function RequestConvert(ByVal citationType As String, ByVal targets As C
         Exit Function
     End If
 
-    If Not HasDictionaryKey(envelope, "data") Then Exit Function
-    If Not IsDictionaryRecord(envelope("data")) Then Exit Function
+    If Not DictHasKey(envelope, "data") Then Exit Function
+    If Not DictIsDictionary(envelope("data")) Then Exit Function
 
     Set RequestConvert = envelope("data")
     Exit Function
@@ -547,13 +547,13 @@ Private Function ParseZoteroDocumentPreferenceJson(ByVal data As String) As Long
     Dim parsed As Object
     Set parsed = JsonParse(trimmed)
     If parsed Is Nothing Then Exit Function
-    If Not IsDictionaryRecord(parsed) Then Exit Function
-    If Not HasDictionaryKey(parsed, "prefs") Then Exit Function
-    If Not IsDictionaryRecord(parsed("prefs")) Then Exit Function
+    If Not DictIsDictionary(parsed) Then Exit Function
+    If Not DictHasKey(parsed, "prefs") Then Exit Function
+    If Not DictIsDictionary(parsed("prefs")) Then Exit Function
 
     Dim prefs As Object
     Set prefs = parsed("prefs")
-    If Not HasDictionaryKey(prefs, "noteType") Then
+    If Not DictHasKey(prefs, "noteType") Then
         ParseZoteroDocumentPreferenceJson = ZOTERO_NOTE_INTEXT
         Exit Function
     End If
@@ -922,14 +922,6 @@ End Function
 
 
 ' --- Type and text helpers ---
-
-Private Function IsDictionaryRecord(ByVal value As Variant) As Boolean
-    IsDictionaryRecord = DictIsDictionary(value)
-End Function
-
-Private Function HasDictionaryKey(ByVal dict As Object, ByVal key As String) As Boolean
-    HasDictionaryKey = DictHasKey(dict, key)
-End Function
 
 Private Function VariantToText(ByVal value As Variant) As String
     On Error GoTo ErrHandler

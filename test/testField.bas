@@ -37,7 +37,7 @@ Public Function RunTests() As String
     report = report & TestResult("collectors in range", TestFieldCollectors()) & vbCrLf
     report = report & TestResult("validators", TestFieldValidators()) & vbCrLf
     report = report & TestResult("style identifier", TestFieldStyleIdentifier()) & vbCrLf
-    report = report & TestResult("data/content comparison", TestFieldDataComparison()) & vbCrLf
+    report = report & TestResult("content comparison", TestFieldContentComparison()) & vbCrLf
     report = report & TestResult("targeted rich-text comparison", TestFieldRichTextComparison()) & vbCrLf
     report = report & TestResult("bookmark name normalization", TestFieldBookmarkNameNormalization()) & vbCrLf
     report = report & TestResult("batch screen updating state", TestFieldBatchScreenUpdating()) & vbCrLf
@@ -175,7 +175,7 @@ ErrHandler:
     TestFieldBookmarkNameNormalization = False
 End Function
 
-Private Function TestFieldDataComparison() As Boolean
+Private Function TestFieldContentComparison() As Boolean
     On Error GoTo ErrHandler
 
     Dim currentData As Object
@@ -184,23 +184,21 @@ Private Function TestFieldDataComparison() As Boolean
     Set nextData = FieldCreatePlaceholderIntextCitationData("test-compare")
 
     Dim ok As Boolean
-    ok = FieldDataEquals(currentData, nextData)
-    ok = ok And FieldContentEquals(currentData, nextData)
+    ok = FieldContentEquals(currentData, nextData)
 
     Set nextData("content") = FieldCreateRichText("[UPDATED]")
-    ok = ok And (Not FieldDataEquals(currentData, nextData))
     ok = ok And (Not FieldContentEquals(currentData, nextData))
 
+    ' A source-only change must not be treated as a render change.
     Set nextData("content") = DictKeyObject(currentData, "content")
     Set nextData("source") = TestSource("changed-source")
-    ok = ok And (Not FieldDataEquals(currentData, nextData))
     ok = ok And FieldContentEquals(currentData, nextData)
 
-    TestFieldDataComparison = ok
+    TestFieldContentComparison = ok
     Exit Function
 
 ErrHandler:
-    TestFieldDataComparison = False
+    TestFieldContentComparison = False
 End Function
 
 Private Function TestFieldBatchScreenUpdating() As Boolean

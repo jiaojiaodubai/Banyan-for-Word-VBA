@@ -26,10 +26,7 @@ Option Explicit
 '   FindNextChapterBreak()     -> Collection { "field", "data" } or Nothing
 '   GetUpdateRange()           -> Word.Range between adjacent chapter breaks
 '   IsChapterBreak(data)       -> Boolean
-'   IsCitationSource(data)     -> Boolean
 '   CanInsertChapterBreakAtSelection() -> Boolean
-'   ReadFieldData(field)       -> Dictionary (parsed JSON) or Nothing
-'   WriteFieldData(field, dict)-> Boolean
 '
 ' Dependencies: modJson, modI10n, modPreference
 ' ============================================================================
@@ -214,7 +211,7 @@ ErrHandler:
 End Function
 
 
-' --- IsChapterBreak / IsCitationSource ---
+' --- IsChapterBreak ---
 
 Public Function IsChapterBreak(ByVal data As Variant) As Boolean
     If Not DictIsDictionary(data) Then Exit Function
@@ -229,13 +226,6 @@ Public Function IsChapterBreak(ByVal data As Variant) As Boolean
     End If
 
     IsChapterBreak = True
-End Function
-
-Public Function IsCitationSource(ByVal data As Variant) As Boolean
-    If Not DictIsDictionary(data) Then Exit Function
-    If Not DictKeyIsCollection(data, "cites") Then Exit Function
-    If Not DictKeyIsDict(data, "params") Then Exit Function
-    IsCitationSource = True
 End Function
 
 
@@ -255,44 +245,6 @@ Public Function CanInsertChapterBreakAtSelection() As Boolean
 ErrHandler:
     DiagnosticsReraiseIfDev "modChapterBreak.CanInsertChapterBreakAtSelection"
     CanInsertChapterBreakAtSelection = False
-End Function
-
-
-' --- ReadFieldData / WriteFieldData ---
-
-Public Function ReadFieldData(ByVal fld As Field) As Object
-    On Error GoTo ErrHandler
-
-    Dim jsonStr As String
-    jsonStr = fld.Data
-    If Len(jsonStr) = 0 Then Exit Function
-
-    Dim obj As Object
-    Set obj = JsonParse(jsonStr)
-    If obj Is Nothing Then Exit Function
-
-    Set ReadFieldData = obj
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modChapterBreak.ReadFieldData"
-    Set ReadFieldData = Nothing
-End Function
-
-Public Function WriteFieldData(ByVal fld As Field, ByVal data As Object) As Boolean
-    On Error GoTo ErrHandler
-
-    Dim jsonStr As String
-    jsonStr = JsonStringify(data)
-    If Len(jsonStr) = 0 Then Exit Function
-
-    fld.Data = jsonStr
-    WriteFieldData = True
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modChapterBreak.WriteFieldData"
-    WriteFieldData = False
 End Function
 
 
@@ -340,7 +292,7 @@ Private Sub EnsureCaretInMainText()
         Dim chkField As Field
         Set chkField = Selection.Range.Fields(1)
         If chkField.Type = wdFieldAddin Then
-            If IsChapterBreak(ReadFieldData(chkField)) Then
+            If IsChapterBreak(FieldReadData(chkField)) Then
                 Dim afterRange As Range
                 Set afterRange = chkField.Result.Duplicate
                 afterRange.Collapse wdCollapseEnd
@@ -395,7 +347,7 @@ Private Function FindPreviousChapterBreakByPosition() As Collection
 
     Do While Not fld Is Nothing
         If IsMainTextAddInField(fld) Then
-            Set data = ReadFieldData(fld)
+            Set data = FieldReadData(fld)
             If IsChapterBreak(data) Then
                 Set FindPreviousChapterBreakByPosition = MakeFieldAndData(fld, data)
                 Exit Function
@@ -419,7 +371,7 @@ Private Function FindNextChapterBreakByPosition() As Collection
 
     Do While Not fld Is Nothing
         If IsMainTextAddInField(fld) Then
-            Set data = ReadFieldData(fld)
+            Set data = FieldReadData(fld)
             If IsChapterBreak(data) Then
                 Set FindNextChapterBreakByPosition = MakeFieldAndData(fld, data)
                 Exit Function
@@ -469,28 +421,12 @@ End Function
 
 ' --- Type guard helpers ---
 
-Private Function IsDictionaryRecord(ByVal value As Variant) As Boolean
-    IsDictionaryRecord = DictIsDictionary(value)
-End Function
-
-Private Function HasDictionaryKey(ByVal dict As Object, ByVal key As String) As Boolean
-    HasDictionaryKey = DictHasKey(dict, key)
-End Function
-
-Private Function IsStringMember(ByVal dict As Object, ByVal key As String) As Boolean
-    IsStringMember = DictKeyIsString(dict, key)
-End Function
-
 Private Function IsPrefStyle(ByVal value As Variant) As Boolean
     If Not DictIsDictionary(value) Then Exit Function
     If Not DictKeyIsString(value, "id") Then Exit Function
     If Not DictKeyIsString(value, "title") Then Exit Function
     If Not DictKeyIsString(value, "citationType") Then Exit Function
     IsPrefStyle = True
-End Function
-
-Private Function IsCollectionObject(ByVal value As Variant) As Boolean
-    IsCollectionObject = DictIsCollection(value)
 End Function
 
 Private Function IsOptionalCitationSource(ByVal value As Variant) As Boolean
@@ -506,7 +442,7 @@ Private Function IsOptionalCitationSource(ByVal value As Variant) As Boolean
         Exit Function
     End If
 
-    IsOptionalCitationSource = IsCitationSource(value)
+    IsOptionalCitationSource = FieldIsCitationSource(value)
     Exit Function
 
 ErrHandler:
@@ -519,7 +455,7 @@ Private Sub CopyOptionalExtraSource(ByVal target As Object, ByVal value As Varia
 
     If DictIsNull(value) Then Exit Sub
     If DictIsEmpty(value) Then Exit Sub
-    If Not IsCitationSource(value) Then Exit Sub
+    If Not FieldIsCitationSource(value) Then Exit Sub
 
     Set target("extraSource") = value
     Exit Sub

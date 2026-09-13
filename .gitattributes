@@ -1,0 +1,4 @@
+# VBA source modules are edited by tooling that writes platform line endings.
+# Pin them to CRLF in the working tree so editor/tooling saves never produce
+# whole-file "every line changed" diffs (git stores LF internally).
+*.bas text eol=crlf

@@ -51,12 +51,14 @@ Public Function RunPerf(Optional ByVal sizesCsv As String = "10,50,100", _
     InsertLikeOps repetitions
     RenderVariants repetitions
     StyleLookupOps repetitions
+    StyleGateOps repetitions
     ScaleOps sizes
     PaginationOps sizes
     ProofingOps sizes
     BibliographyOps sizes
     JsonAndLookupOps sizes
     ComparisonOps sizes
+    TextCompareOps repetitions
     NoteOps repetitions
     ResetPerfDocument
 
@@ -614,43 +616,259 @@ End Sub
 
 Private Sub StyleLookupOps(ByVal reps As Long)
     Out "[SECTION] citation style lookup isolation"
-    Out "[INFO] current path scans every document style for every rendered in-text citation"
+    Out "[INFO] first use of a style scans every document style; later uses hit the per-document cache"
 
     Dim data As Object
     Set data = BuildIntextData("style-probe", "plain")
     Dim fld As Field
     Set fld = CreatePreparedField(data)
-    FieldApplyIntextCitationStyle fld
-
-    Dim cachedStyle As Style
-    Set cachedStyle = fld.Result.Style
 
     Dim calls As Long
     calls = reps * 5
+    Dim samples As Long
+    samples = 4
+
+    Dim coldTotal As Double
+    Dim warmTotal As Double
     Dim i As Long
+    Dim j As Long
     Dim t0 As Double
-    Dim currentTotal As Double
-    t0 = PerfNow()
-    For i = 1 To calls
-        FieldClearPerformanceCache
-        FieldApplyIntextCitationStyle fld
-    Next i
-    currentTotal = PerfElapsed(t0)
+    For i = 1 To samples
+        ' A fresh style name guarantees the first apply misses the cache (linear
+        ' scan over every document style); subsequent applies hit the cache.
+        Dim styleName As String
+        styleName = "Banyan Perf Lookup " & CStr(i)
+        EnsureCharacterStyle styleName
 
-    Dim cachedTotal As Double
-    t0 = PerfNow()
-    For i = 1 To calls
-        cachedStyle.UnhideWhenUsed = True
-        cachedStyle.QuickStyle = True
-        fld.Result.Style = cachedStyle
-    Next i
-    cachedTotal = PerfElapsed(t0)
+        t0 = PerfNow()
+        FieldApplyStyleToField fld, styleName, wdStyleTypeCharacter
+        coldTotal = coldTotal + PerfElapsed(t0)
 
-    OutTime "current scan per call", currentTotal / calls
-    OutTime "cached style per call", cachedTotal / calls
-    OutTime "avoidable style lookup per call", (currentTotal - cachedTotal) / calls
+        t0 = PerfNow()
+        For j = 1 To calls
+            FieldApplyStyleToField fld, styleName, wdStyleTypeCharacter
+        Next j
+        warmTotal = warmTotal + PerfElapsed(t0)
+    Next i
+
+    Dim coldAverage As Double
+    Dim warmAverage As Double
+    coldAverage = coldTotal / samples
+    warmAverage = warmTotal / (samples * calls)
+
+    OutTime "cache-miss apply (full scan, per call)", coldAverage
+    OutTime "cache-hit apply (per call)", warmAverage
+    OutTime "avoidable scan per miss", coldAverage - warmAverage
     FieldRemoveFieldSafely fld
     Out ""
+End Sub
+
+
+' --- Style assignment gate -----------------------------------------------
+
+Private Sub StyleGateOps(ByVal reps As Long)
+    Out "[SECTION] style assignment gate (style already applied)"
+    Out "[INFO] mirrors the WPS field.test.ts comparison: always-assign vs skip-if-matching"
+
+    Dim fieldCount As Long
+    fieldCount = 12
+    Dim rounds As Long
+    rounds = 5
+
+    ResetPerfDocument
+
+    Dim fields As Collection
+    Set fields = New Collection
+    Dim i As Long
+    For i = 1 To fieldCount
+        Dim data As Object
+        Set data = BuildIntextData("style-gate-" & CStr(i), "plain")
+        fields.Add CreatePreparedField(data)
+        If i < fieldCount Then DocEnd().InsertAfter " "
+    Next i
+
+    ' Warm the style and establish a matching state on every field.
+    Dim item As Variant
+    For Each item In fields
+        Dim warmField As Field
+        Set warmField = item
+        FieldApplyIntextCitationStyle warmField
+    Next item
+
+    Dim targetName As String
+    Dim firstField As Field
+    Set firstField = fields(1)
+    targetName = RangeStyleName(firstField.Result)
+    If Len(targetName) = 0 Then
+        Out "[FAIL] could not read the applied citation style name"
+        Exit Sub
+    End If
+    Out "[INFO] target style=" & targetName
+
+    Dim t0 As Double
+    Dim round As Long
+    Dim ops As Long
+    ops = rounds * fieldCount
+
+    ' Gate probe cost: read the current style name only.
+    Dim readTotal As Double
+    Dim matched As Long
+    For round = 1 To rounds
+        t0 = PerfNow()
+        For Each item In fields
+            Dim probeField As Field
+            Set probeField = item
+            If RangeStyleName(probeField.Result) = targetName Then matched = matched + 1
+        Next item
+        readTotal = readTotal + PerfElapsed(t0)
+    Next round
+
+    ' Current behavior: assign the style unconditionally.
+    Dim alwaysTotal As Double
+    For round = 1 To rounds
+        t0 = PerfNow()
+        For Each item In fields
+            Dim alwaysField As Field
+            Set alwaysField = item
+            FieldApplyIntextCitationStyle alwaysField
+        Next item
+        alwaysTotal = alwaysTotal + PerfElapsed(t0)
+    Next round
+
+    ' Candidate optimization: assign only when the current style differs.
+    Dim gateTotal As Double
+    For round = 1 To rounds
+        t0 = PerfNow()
+        For Each item In fields
+            Dim gateField As Field
+            Set gateField = item
+            If RangeStyleName(gateField.Result) <> targetName Then FieldApplyIntextCitationStyle gateField
+        Next item
+        gateTotal = gateTotal + PerfElapsed(t0)
+    Next round
+
+    OutTime "read style name (per op)", readTotal / ops
+    OutTime "always assign style (per op)", alwaysTotal / ops
+    OutTime "gate: read then assign if different (per op)", gateTotal / ops
+    Out "[INFO] gate matched=" & CStr(matched) & "/" & CStr(ops) & _
+        "; per-op saving=" & FmtMs((alwaysTotal - gateTotal) / ops)
+
+    ' Inline font gate: the render path also writes Font properties per mark.
+    Dim boldRange As Range
+    Set boldRange = firstField.Result.Duplicate
+    boldRange.Font.Bold = True
+
+    Dim boldOps As Long
+    boldOps = 200
+
+    Dim alwaysBoldTotal As Double
+    For round = 1 To rounds
+        Dim r As Long
+        t0 = PerfNow()
+        For r = 1 To boldOps
+            boldRange.Font.Bold = True
+        Next r
+        alwaysBoldTotal = alwaysBoldTotal + PerfElapsed(t0)
+    Next round
+
+    Dim gateBoldTotal As Double
+    For round = 1 To rounds
+        Dim r2 As Long
+        t0 = PerfNow()
+        For r2 = 1 To boldOps
+            If boldRange.Font.Bold <> True Then boldRange.Font.Bold = True
+        Next r2
+        gateBoldTotal = gateBoldTotal + PerfElapsed(t0)
+    Next round
+
+    OutTime "font bold always (per op)", alwaysBoldTotal / (rounds * boldOps)
+    OutTime "font bold gate (per op)", gateBoldTotal / (rounds * boldOps)
+    Out ""
+
+    ResetPerfDocument
+End Sub
+
+Private Function RangeStyleName(ByVal targetRange As Range) As String
+    On Error GoTo ErrHandler
+    Dim styleObject As Style
+    Set styleObject = targetRange.Style
+    If Not styleObject Is Nothing Then RangeStyleName = styleObject.NameLocal
+    Exit Function
+
+ErrHandler:
+    On Error Resume Next
+    RangeStyleName = CStr(targetRange.Style)
+End Function
+
+
+' --- Text comparison micro (length gate) ----------------------------------
+
+Private Sub TextCompareOps(ByVal reps As Long)
+    Out "[SECTION] text comparison micro (explicit length gate vs direct compare)"
+    Out "[INFO] isolates the text step of FieldRichTextEquals; strings held in locals"
+
+    Dim iterations As Long
+    iterations = 20000
+
+    Dim longText As String
+    longText = String$(500, "x")
+    Dim longDifferentEnd As String
+    longDifferentEnd = String$(499, "x") & "a"
+    Dim longDifferentEnd2 As String
+    longDifferentEnd2 = String$(499, "x") & "b"
+    Dim longShorter As String
+    longShorter = String$(499, "x")
+
+    TimeCompare "short equal (" & CStr(Len(INTEXT_TEXT)) & " chars)", INTEXT_TEXT, INTEXT_TEXT, iterations
+    TimeCompare "long equal (" & CStr(Len(longText)) & " chars)", longText, longText, iterations
+    TimeCompare "long differ at end", longDifferentEnd, longDifferentEnd2, iterations
+    TimeCompare "long differ in length", longText, longShorter, iterations
+
+    ' Decisive probe: if `<>` short-circuits on length, the different-length
+    ' case costs the same as the length-only check; otherwise it pays a full
+    ' 200k-character scan like the equal case.
+    Dim hugeA As String
+    Dim hugeB As String
+    Dim hugeC As String
+    hugeA = String$(200000, "x")
+    hugeB = String$(200000, "x")
+    hugeC = String$(199999, "x")
+    Dim hugeIterations As Long
+    hugeIterations = 500
+    TimeCompare "huge equal (200000 chars)", hugeA, hugeB, hugeIterations
+    TimeCompare "huge differ in length", hugeA, hugeC, hugeIterations
+    Out ""
+End Sub
+
+Private Sub TimeCompare(ByVal scenario As String, ByVal leftText As String, _
+                        ByVal rightText As String, ByVal iterations As Long)
+    Dim sink As Long
+    Dim i As Long
+    Dim t0 As Double
+
+    t0 = PerfNow()
+    For i = 1 To iterations
+        If Len(leftText) <> Len(rightText) Then
+            sink = sink + 1
+        ElseIf leftText <> rightText Then
+            sink = sink + 1
+        End If
+    Next i
+    OutMicro "gate   " & scenario, PerfElapsed(t0), iterations
+
+    t0 = PerfNow()
+    For i = 1 To iterations
+        If leftText <> rightText Then sink = sink + 1
+    Next i
+    OutMicro "direct " & scenario, PerfElapsed(t0), iterations
+
+    t0 = PerfNow()
+    For i = 1 To iterations
+        If Len(leftText) <> Len(rightText) Then sink = sink + 1
+    Next i
+    OutMicro "lenOnly " & scenario, PerfElapsed(t0), iterations
+
+    If sink = -1 Then Out CStr(iterations)
 End Sub
 
 
@@ -1072,6 +1290,14 @@ Private Sub EnsureParagraphStyle(ByVal styleName As String)
     If style Is Nothing Then ActiveDocument.Styles.Add Name:=styleName, Type:=wdStyleTypeParagraph
 End Sub
 
+Private Sub EnsureCharacterStyle(ByVal styleName As String)
+    On Error Resume Next
+    Dim style As Style
+    Set style = ActiveDocument.Styles(styleName)
+    On Error GoTo 0
+    If style Is Nothing Then ActiveDocument.Styles.Add Name:=styleName, Type:=wdStyleTypeCharacter
+End Sub
+
 Private Function DocEnd() As Range
     Dim target As Range
     Set target = ActiveDocument.Content.Duplicate
@@ -1156,6 +1382,10 @@ Private Sub OutScale(ByVal name As String, ByVal itemCount As Long, _
                      ByVal mode As String, ByVal seconds As Double)
     Out "[TIME] " & name & " size=" & CStr(itemCount) & " mode=" & mode & _
         " total=" & FmtMs(seconds) & " perItem=" & FmtMs(seconds / itemCount)
+End Sub
+
+Private Sub OutMicro(ByVal name As String, ByVal seconds As Double, ByVal iterations As Long)
+    Out "[TIME] " & name & " perOp=" & Format$(seconds / iterations * 1000000#, "0.0") & " us"
 End Sub
 
 Private Sub Out(ByVal text As String)

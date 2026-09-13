@@ -24,7 +24,6 @@ Option Explicit
 '       deletes the old footnote, then replaces the copied field fresh
 '   FieldRenderStyledField(field, [content])
 '   FieldRenderStyledFieldWithStyle(field, styleName, [styleType], [content])
-'   FieldApplyRichTextLinksToFieldResult(field)
 '   FieldCollectIntextCitationFieldsInRange(range)
 '   FieldCollectNoteCitationFootnotesInRange(range)
 '   FieldMigrateIntextCitationsToNotes(range)
@@ -112,34 +111,8 @@ Private Sub FieldEndCustomUndoRecord()
     On Error GoTo 0
 End Sub
 
-Public Sub FieldClearPerformanceCache()
-    On Error Resume Next
-    Set m_styleCache = Nothing
-    Set m_styleCacheDocument = Nothing
-    On Error GoTo 0
-End Sub
-
 
 ' --- Data comparison --------------------------------------------------------
-
-Public Function FieldDataEquals(ByVal currentData As Object, _
-                                ByVal nextData As Object) As Boolean
-    On Error GoTo ErrHandler
-    If currentData Is Nothing Or nextData Is Nothing Then Exit Function
-    ' This general comparison remains only for non-citation metadata paths.
-    ' Citation refresh uses FieldRichTextEquals on its known render inputs.
-    Dim currentJson As String
-    Dim nextJson As String
-    currentJson = JsonStringify(currentData)
-    nextJson = JsonStringify(nextData)
-    If Len(currentJson) = 0 Or Len(nextJson) = 0 Then Exit Function
-    FieldDataEquals = (currentJson = nextJson)
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modField.FieldDataEquals"
-    FieldDataEquals = False
-End Function
 
 Public Function FieldContentEquals(ByVal currentData As Object, _
                                    ByVal nextData As Object) As Boolean
@@ -646,7 +619,7 @@ Private Function RenderStyledFieldCore(ByVal fld As Field, _
     fld.ShowCodes = False
 
     If Not data Is Nothing Then
-        If HasDictionaryKey(data, "type") Then
+        If DictHasKey(data, "type") Then
             If DictKeyString(data, "type") = "intext-citation" Then
                 FieldApplyIntextCitationStyle fld
             ElseIf DictKeyString(data, "type") = "note-citation" Then
@@ -1014,9 +987,9 @@ Public Function FieldIsRichText(ByVal value As Variant) As Boolean
     Set d = value
     If d Is Nothing Then Exit Function
     If TypeName(d) <> "Dictionary" Then Exit Function
-    If Not IsStringMember(d, "text") Then Exit Function
-    If Not HasDictionaryKey(d, "marks") Then Exit Function
-    If Not IsCollectionObject(DictKeyObject(d, "marks")) Then Exit Function
+    If Not DictKeyIsString(d, "text") Then Exit Function
+    If Not DictHasKey(d, "marks") Then Exit Function
+    If Not DictIsCollection(DictKeyObject(d, "marks")) Then Exit Function
 
     Dim textLength As Long
     textLength = Len(DictKeyString(d, "text"))
@@ -1147,22 +1120,6 @@ Private Function FieldIsCitation(ByVal data As Variant) As Boolean
     FieldIsCitation = True
 End Function
 
-Private Function IsDictionaryRecord(ByVal value As Variant) As Boolean
-    IsDictionaryRecord = DictIsDictionary(value)
-End Function
-
-Private Function IsCollectionObject(ByVal value As Variant) As Boolean
-    IsCollectionObject = DictIsCollection(value)
-End Function
-
-Private Function HasDictionaryKey(ByVal dict As Object, ByVal key As String) As Boolean
-    HasDictionaryKey = DictHasKey(dict, key)
-End Function
-
-Private Function IsStringMember(ByVal dict As Object, ByVal key As String) As Boolean
-    IsStringMember = DictKeyIsString(dict, key)
-End Function
-
 
 ' --- Render internals ---
 
@@ -1181,7 +1138,7 @@ Private Function ResolveFieldContent(ByVal fld As Field, Optional ByVal content 
     Dim data As Object
     Set data = FieldReadData(fld)
     If data Is Nothing Then Exit Function
-    If Not HasDictionaryKey(data, "content") Then Exit Function
+    If Not DictHasKey(data, "content") Then Exit Function
     If Not FieldIsRichText(DictKeyObject(data, "content")) Then Exit Function
 
     Set ResolveFieldContent = DictKeyObject(data, "content")
@@ -1205,7 +1162,7 @@ Private Function ResolveFieldContentFromData(ByVal data As Object, Optional ByVa
     End If
 
     If data Is Nothing Then Exit Function
-    If Not HasDictionaryKey(data, "content") Then Exit Function
+    If Not DictHasKey(data, "content") Then Exit Function
     If Not FieldIsRichText(DictKeyObject(data, "content")) Then Exit Function
     Set ResolveFieldContentFromData = DictKeyObject(data, "content")
     Exit Function
@@ -1242,22 +1199,6 @@ Public Function FieldPlainTextFromContent(ByVal content As Object) As String
 ErrHandler:
     DiagnosticsReraiseIfDev "modField.FieldPlainTextFromContent"
     FieldPlainTextFromContent = ""
-End Function
-
-Public Function FieldApplyRichTextLinksToFieldResult(ByVal fld As Field, _
-                                                     Optional ByVal content As Variant) As Boolean
-    On Error GoTo ErrHandler
-
-    Dim resolvedContent As Object
-    Set resolvedContent = ResolveFieldContent(fld, content)
-    If resolvedContent Is Nothing Then Exit Function
-
-    FieldApplyRichTextLinksToFieldResult = FieldApplyRichTextLinksToRange(fld.Result, resolvedContent)
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modField.FieldApplyRichTextLinksToFieldResult"
-    FieldApplyRichTextLinksToFieldResult = False
 End Function
 
 Private Sub FieldApplyRichTextStylesToRange(ByVal targetRange As Range, ByVal content As Object)
@@ -1323,10 +1264,10 @@ Private Function FieldIsInlineMark(ByVal value As Variant, ByVal textLength As L
     Set d = value
     If d Is Nothing Then Exit Function
     If TypeName(d) <> "Dictionary" Then Exit Function
-    If Not IsStringMember(d, "type") Then Exit Function
-    If Not HasDictionaryKey(d, "start") Then Exit Function
-    If Not HasDictionaryKey(d, "end") Then Exit Function
-    If Not HasDictionaryKey(d, "value") Then Exit Function
+    If Not DictKeyIsString(d, "type") Then Exit Function
+    If Not DictHasKey(d, "start") Then Exit Function
+    If Not DictHasKey(d, "end") Then Exit Function
+    If Not DictHasKey(d, "value") Then Exit Function
     If DictKeyIsNull(d, "start") Or DictKeyIsEmpty(d, "start") Then Exit Function
     If DictKeyIsNull(d, "end") Or DictKeyIsEmpty(d, "end") Then Exit Function
     If DictKeyIsObject(d, "start") Or DictKeyIsObject(d, "end") Then Exit Function
@@ -1347,13 +1288,13 @@ Private Function FieldIsInlineMark(ByVal value As Variant, ByVal textLength As L
             If DictKeyIsNull(d, "value") Or DictKeyIsEmpty(d, "value") Then Exit Function
             If Not DictKeyIsBoolean(d, "value") Then Exit Function
         Case "script"
-            If Not IsStringMember(d, "value") Then Exit Function
+            If Not DictKeyIsString(d, "value") Then Exit Function
             If DictKeyString(d, "value") <> "superscript" And DictKeyString(d, "value") <> "subscript" Then Exit Function
         Case "color", "backgroundColor"
-            If Not IsStringMember(d, "value") Then Exit Function
+            If Not DictKeyIsString(d, "value") Then Exit Function
             If Not FieldIsHexColorString(DictKeyString(d, "value")) Then Exit Function
         Case "link"
-            If Not IsStringMember(d, "value") Then Exit Function
+            If Not DictKeyIsString(d, "value") Then Exit Function
             If Len(DictKeyString(d, "value")) = 0 Then Exit Function
         Case Else
             Exit Function

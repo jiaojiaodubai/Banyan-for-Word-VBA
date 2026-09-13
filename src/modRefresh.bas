@@ -524,8 +524,8 @@ Private Function RefreshBibliographyInRange(ByVal targetRange As Range, _
                                             ByVal pref As Object) As Boolean
     On Error GoTo ErrHandler
 
-    If Not HasDictionaryKey(respond, "bibliography") Then Exit Function
-    If Not IsCollectionObject(DictKeyObject(respond, "bibliography")) Then Exit Function
+    If Not DictHasKey(respond, "bibliography") Then Exit Function
+    If Not DictIsCollection(DictKeyObject(respond, "bibliography")) Then Exit Function
     If DictKeyObject(respond, "bibliography").Count = 0 Then Exit Function
 
     Dim lines As Collection
@@ -998,15 +998,15 @@ Private Function RequestRefresh(ByVal style As Object, _
     Set envelope = JsonParse(respText)
     If envelope Is Nothing Then Exit Function
     If Not EnvelopeOk(envelope) Then Exit Function
-    If Not HasDictionaryKey(envelope, "data") Then Exit Function
-    If Not IsDictionaryRecord(envelope("data")) Then Exit Function
+    If Not DictHasKey(envelope, "data") Then Exit Function
+    If Not DictIsDictionary(envelope("data")) Then Exit Function
 
     Dim data As Object
     Set data = envelope("data")
-    If Not HasDictionaryKey(data, "citations") Then Exit Function
-    If Not HasDictionaryKey(data, "bibliography") Then Exit Function
-    If Not IsCollectionObject(data("citations")) Then Exit Function
-    If Not IsCollectionObject(data("bibliography")) Then Exit Function
+    If Not DictHasKey(data, "citations") Then Exit Function
+    If Not DictHasKey(data, "bibliography") Then Exit Function
+    If Not DictIsCollection(data("citations")) Then Exit Function
+    If Not DictIsCollection(data("bibliography")) Then Exit Function
 
     Set RequestRefresh = data
     Exit Function
@@ -1077,8 +1077,8 @@ Private Function BuildCitationResponseIndex(ByVal citations As Collection) As Ob
 
     Dim item As Variant
     For Each item In citations
-        If IsDictionaryRecord(item) Then
-            If HasDictionaryKey(item, "id") Then
+        If DictIsDictionary(item) Then
+            If DictHasKey(item, "id") Then
                 Dim citationId As String
                 citationId = DictKeyString(item, "id")
                 If Len(citationId) > 0 Then Set result(citationId) = item
@@ -1173,18 +1173,6 @@ End Function
 
 
 ' --- Type helpers ---
-
-Private Function IsDictionaryRecord(ByVal value As Variant) As Boolean
-    IsDictionaryRecord = DictIsDictionary(value)
-End Function
-
-Private Function IsCollectionObject(ByVal value As Variant) As Boolean
-    IsCollectionObject = DictIsCollection(value)
-End Function
-
-Private Function HasDictionaryKey(ByVal dict As Object, ByVal key As String) As Boolean
-    HasDictionaryKey = DictHasKey(dict, key)
-End Function
 
 
 ' --- Local i18n ---
