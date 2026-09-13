@@ -11,6 +11,8 @@ Option Explicit
 ' Public API:
 '   FieldReadData(field) / FieldWriteData(field, data)
 '   FieldIsIntextCitation(data) / FieldIsNoteCitation(data)
+'   FieldParseCode(codeText, kind, id) / FieldCitationCode(id)
+'   FieldBibliographyCode(id) / FieldTextEquals(currentText, nextText)
 '   FieldCreateIntextCitationAtRange(range, data)
 '   FieldCreateNoteCitationAtRange(range, data) -> Collection {note, field}
 '   FieldRebuildNoteCitationAtRange(note, field, data) -> Collection {note, field}
@@ -24,8 +26,8 @@ Option Explicit
 '       deletes the old footnote, then replaces the copied field fresh
 '   FieldRenderStyledField(field, [content])
 '   FieldRenderStyledFieldWithStyle(field, styleName, [styleType], [content])
-'   FieldCollectIntextCitationFieldsInRange(range)
-'   FieldCollectNoteCitationFootnotesInRange(range)
+'   FieldCollectIntextCitationFieldsInRange(range) -> [{id, field}]
+'   FieldCollectNoteCitationFootnotesInRange(range) -> [{id, note, field}]
 '   FieldMigrateIntextCitationsToNotes(range)
 '   FieldMigrateNoteCitationsToIntext(range)
 '   FieldRemoveFieldSafely(field) / FieldRemoveFootnoteSafely(footnote)
@@ -43,6 +45,24 @@ Private Const FIELD_BIBLIOGRAPHY_BOOKMARK_PREFIX As String = "Banyan_Entry_"
 
 Private Const INTEXT_STYLE_ZH As String = "Banyan 引注"
 Private Const INTEXT_STYLE_EN As String = "Banyan Citation"
+
+' --- Field code contract ----------------------------------------------------
+'   BANYAN_CITATION <id>      in-text citation or note citation
+'   BANYAN_BIBLIOGRAPHY <id>  bibliography title line or entry line
+'   <chapter prompt>          chapter break
+' Every code carries the data id, pending placeholders included; a matching code
+' is trusted, so collecting never parses Field.Data.
+' Keep these declarations above the first procedure: the VBE does not register a
+' module-level Const declared below one.
+Private Const FIELD_CODE_CITATION As String = "BANYAN_CITATION"
+Private Const FIELD_CODE_BIBLIOGRAPHY As String = "BANYAN_BIBLIOGRAPHY"
+Private Const FIELD_CODE_CHAPTER_ZH As String = "Banyan章节分隔符"
+Private Const FIELD_CODE_CHAPTER_EN As String = "Banyan chapter break"
+
+' Kinds returned by FieldParseCode.
+Public Const FIELD_KIND_CITATION As String = "citation"
+Public Const FIELD_KIND_BIBLIOGRAPHY As String = "bibliography"
+Public Const FIELD_KIND_CHAPTER As String = "chapter"
 
 ' VBA-only process state. The cache is scoped to the active Document and the
 ' batch depth makes nested refresh calls restore ScreenUpdating exactly once.
@@ -112,6 +132,80 @@ Private Sub FieldEndCustomUndoRecord()
 End Sub
 
 
+Public Function FieldCitationCode(ByVal id As String) As String
+    FieldCitationCode = FIELD_CODE_CITATION & " " & id
+End Function
+
+Public Function FieldBibliographyCode(ByVal id As String) As String
+    FieldBibliographyCode = FIELD_CODE_BIBLIOGRAPHY & " " & id
+End Function
+
+' Parse a field code into its kind and data id; False when it is not a Banyan
+' field. A code written before the contract can have an empty id.
+Public Function FieldParseCode(ByVal codeText As String, _
+                               ByRef outKind As String, _
+                               ByRef outId As String) As Boolean
+    On Error GoTo ErrHandler
+
+    Dim code As String
+    code = Trim$(codeText)
+    If Len(code) = 0 Then Exit Function
+    If StrComp(Left$(code, 6), "ADDIN ", vbTextCompare) = 0 Then code = Trim$(Mid$(code, 7))
+
+    ' A chapter break keeps its readable prompt as the code.
+    If InStr(1, code, FIELD_CODE_CHAPTER_ZH, vbTextCompare) > 0 Then
+        outKind = FIELD_KIND_CHAPTER
+        FieldParseCode = True
+        Exit Function
+    End If
+    If InStr(1, code, FIELD_CODE_CHAPTER_EN, vbTextCompare) > 0 Then
+        outKind = FIELD_KIND_CHAPTER
+        FieldParseCode = True
+        Exit Function
+    End If
+
+    If StrComp(Left$(code, Len(FIELD_CODE_BIBLIOGRAPHY)), FIELD_CODE_BIBLIOGRAPHY, vbTextCompare) = 0 Then
+        outKind = FIELD_KIND_BIBLIOGRAPHY
+    ElseIf StrComp(Left$(code, Len(FIELD_CODE_CITATION)), FIELD_CODE_CITATION, vbTextCompare) = 0 Then
+        outKind = FIELD_KIND_CITATION
+    Else
+        Exit Function
+    End If
+
+    outId = FieldRemainder(code)
+    FieldParseCode = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldParseCode"
+    FieldParseCode = False
+End Function
+
+Private Function FieldRemainder(ByVal value As String) As String
+    Dim text As String
+    text = Trim$(value)
+    Dim spacePos As Long
+    spacePos = InStr(text, " ")
+    If spacePos > 0 Then FieldRemainder = Trim$(Mid$(text, spacePos + 1))
+End Function
+
+' True when the field's code parses to the given kind.
+Public Function FieldHasCodeKind(ByVal fld As Field, ByVal codeKind As String) As Boolean
+    If fld Is Nothing Then Exit Function
+
+    Dim kind As String
+    Dim id As String
+    If Not FieldParseCode(fld.Code.Text, kind, id) Then Exit Function
+    FieldHasCodeKind = (kind = codeKind)
+End Function
+
+' String equality with a length short-circuit (VBA's `=` scans first).
+Public Function FieldTextEquals(ByVal currentText As String, ByVal nextText As String) As Boolean
+    If Len(currentText) <> Len(nextText) Then Exit Function
+    FieldTextEquals = (currentText = nextText)
+End Function
+
+
 ' --- Data comparison --------------------------------------------------------
 
 Public Function FieldContentEquals(ByVal currentData As Object, _
@@ -148,8 +242,7 @@ Public Function FieldRichTextEquals(ByVal currentContent As Object, _
     Dim nextText As String
     currentText = CStr(currentContent("text"))
     nextText = CStr(nextContent("text"))
-    If Len(currentText) <> Len(nextText) Then Exit Function
-    If currentText <> nextText Then Exit Function
+    If Not FieldTextEquals(currentText, nextText) Then Exit Function
 
     Dim currentMarks As Object
     Dim nextMarks As Object
@@ -214,22 +307,41 @@ End Function
 ' --- JSON data ---
 
 Public Function FieldReadData(ByVal fld As Field) As Object
+    Dim jsonText As String
+    Set FieldReadData = FieldReadDataText(fld, jsonText)
+End Function
+
+' The stored JSON as text, without parsing it.
+Public Function FieldDataText(ByVal fld As Field) As String
+    On Error GoTo ErrHandler
+
+    FieldDataText = CStr(fld.Data)
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldDataText"
+    FieldDataText = ""
+End Function
+
+' Read the stored JSON once: both the parsed data and the text it came from.
+Public Function FieldReadDataText(ByVal fld As Field, ByRef outJsonText As String) As Object
     On Error GoTo ErrHandler
 
     Dim jsonText As String
-    jsonText = fld.Data
+    jsonText = CStr(fld.Data)
+    outJsonText = jsonText
     If Len(jsonText) = 0 Then Exit Function
 
     Dim data As Object
     Set data = JsonParse(jsonText)
     If data Is Nothing Then Exit Function
 
-    Set FieldReadData = data
+    Set FieldReadDataText = data
     Exit Function
 
 ErrHandler:
-    DiagnosticsReraiseIfDev "modField.FieldReadData"
-    Set FieldReadData = Nothing
+    DiagnosticsReraiseIfDev "modField.FieldReadDataText"
+    Set FieldReadDataText = Nothing
 End Function
 
 Public Function FieldWriteData(ByVal fld As Field, ByVal data As Object) As Boolean
@@ -314,7 +426,7 @@ Public Function FieldCreateIntextCitationAtRange(ByVal targetRange As Range, _
     targetRange.Collapse wdCollapseEnd
 
     Dim fld As Field
-    Set fld = FieldCreateRawAddinField(targetRange, "BANYAN_CITATION " & DictKeyString(data, "id"))
+    Set fld = FieldCreateRawAddinField(targetRange, FieldCitationCode(DictKeyString(data, "id")))
     FieldWriteData fld, data
     FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
 
@@ -341,7 +453,7 @@ Public Function FieldCreateNoteCitationAtRange(ByVal targetRange As Range, _
     noteRange.Collapse wdCollapseStart
 
     Dim fld As Field
-    Set fld = FieldCreateRawAddinField(noteRange, "BANYAN_CITATION " & DictKeyString(data, "id"))
+    Set fld = FieldCreateRawAddinField(noteRange, FieldCitationCode(DictKeyString(data, "id")))
     FieldWriteData fld, data
     FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
 
@@ -485,7 +597,7 @@ Public Function FieldRebuildNoteCitationAtRange(ByVal note As Footnote, _
         Dim noteRange As Range
         Set noteRange = newNote.Range.Duplicate
         noteRange.Collapse wdCollapseStart
-        Set newField = FieldCreateRawAddinField(noteRange, "BANYAN_CITATION " & DictKeyString(data, "id"))
+        Set newField = FieldCreateRawAddinField(noteRange, FieldCitationCode(DictKeyString(data, "id")))
         If Not newField Is Nothing Then
             FieldWriteData newField, data
             FieldRenderStyledFieldWithData newField, data, DictKeyObject(data, "content")
@@ -536,7 +648,7 @@ Private Function FieldReplaceCitationInNote(ByVal note As Footnote, _
     insertAt.SetRange beforeRange.End, beforeRange.End
 
     Dim newField As Field
-    Set newField = FieldCreateRawAddinField(insertAt, "BANYAN_CITATION " & DictKeyString(data, "id"))
+    Set newField = FieldCreateRawAddinField(insertAt, FieldCitationCode(DictKeyString(data, "id")))
     If newField Is Nothing Then Exit Function
 
     FieldWriteData newField, data
@@ -553,10 +665,14 @@ End Function
 Private Function FieldFindFirstCitationInNote(ByVal note As Footnote) As Field
     On Error GoTo ErrHandler
     Dim f As Field
+    Dim kind As String
+    Dim id As String
     For Each f In note.Range.Fields
-        If InStr(1, f.Code.Text, "BANYAN_CITATION", vbTextCompare) > 0 Then
-            Set FieldFindFirstCitationInNote = f
-            Exit Function
+        If FieldParseCode(f.Code.Text, kind, id) Then
+            If kind = FIELD_KIND_CITATION Then
+                Set FieldFindFirstCitationInNote = f
+                Exit Function
+            End If
         End If
     Next f
     Exit Function
@@ -746,19 +862,16 @@ Public Function FieldCollectIntextCitationFieldsInRange(ByVal targetRange As Ran
     Dim result As Collection
     Set result = New Collection
 
+    ' Code-only classification: no Field.Data access.
     Dim fld As Field
-    Dim data As Object
+    Dim kind As String
+    Dim id As String
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
-            If Not FieldCodeHasPrefix(fld, "BANYAN_CITATION") Then GoTo NextIntextField
-            Set data = FieldReadData(fld)
-            If FieldIsIntextCitation(data) Then
-                Dim pair As Collection
-                Set pair = MakeFieldAndData(fld, data)
-                result.Add pair
+            If FieldParseCode(fld.Code.Text, kind, id) Then
+                If kind = FIELD_KIND_CITATION Then result.Add MakeFieldAndId(fld, id)
             End If
         End If
-NextIntextField:
     Next fld
 
     Set FieldCollectIntextCitationFieldsInRange = result
@@ -770,48 +883,22 @@ Public Function FieldCollectNoteCitationFootnotesInRange(ByVal targetRange As Ra
 
     Dim note As Footnote
     Dim fld As Field
-    Dim data As Object
+    Dim kind As String
+    Dim id As String
     For Each note In targetRange.Footnotes
         If note.Range.Fields.Count > 0 Then
             Set fld = note.Range.Fields(1)
             If Not fld Is Nothing Then
                 If fld.Type = wdFieldAddin Then
-                    If Not FieldCodeHasPrefix(fld, "BANYAN_CITATION") Then GoTo NextNoteField
-                    Set data = FieldReadData(fld)
-                    If FieldIsNoteCitation(data) Then
-                        Dim pair As Collection
-                        Set pair = MakeNoteFieldAndData(note, fld, data)
-                        result.Add pair
+                    If FieldParseCode(fld.Code.Text, kind, id) Then
+                        If kind = FIELD_KIND_CITATION Then result.Add MakeNoteFieldAndId(note, fld, id)
                     End If
                 End If
             End If
         End If
-NextNoteField:
     Next note
 
     Set FieldCollectNoteCitationFootnotesInRange = result
-End Function
-
-Public Function FieldCodeHasPrefix(ByVal fld As Field, ByVal expectedPrefix As String) As Boolean
-    On Error GoTo ErrHandler
-    If fld Is Nothing Then Exit Function
-    If fld.Type <> wdFieldAddin Then Exit Function
-
-    Dim codeText As String
-    codeText = UCase$(Trim$(fld.Code.Text))
-    expectedPrefix = UCase$(Trim$(expectedPrefix))
-    If Left$(codeText, Len("ADDIN ")) = "ADDIN " Then codeText = Trim$(Mid$(codeText, Len("ADDIN ") + 1))
-    If Left$(codeText, Len(expectedPrefix)) <> expectedPrefix Then Exit Function
-    If Len(codeText) > Len(expectedPrefix) Then
-        FieldCodeHasPrefix = (Mid$(codeText, Len(expectedPrefix) + 1, 1) = " ")
-    Else
-        FieldCodeHasPrefix = True
-    End If
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modField.FieldCodeHasPrefix"
-    FieldCodeHasPrefix = False
 End Function
 
 ' --- Migration helpers ---
@@ -830,13 +917,14 @@ Public Sub FieldMigrateIntextCitationsToNotes(ByVal targetRange As Range)
         Dim fld As Field
         Dim data As Object
         Set fld = fd("field")
-        Set data = fd("data")
+        Set data = FieldReadData(fld)
+        If data Is Nothing Then GoTo NextCitation
 
         Dim insertPosition As Long
         insertPosition = fld.Result.Start
 
         Dim convertedData As Object
-        Set convertedData = FieldCreatePlaceholderNoteCitationData(DictKeyString(data, "id"), DictKeyObject(data, "source"))
+        Set convertedData = FieldCreatePlaceholderNoteCitationData(CStr(fd("id")), DictKeyObject(data, "source"))
 
         FieldRemoveFieldSafely fld
 
@@ -847,6 +935,7 @@ Public Sub FieldMigrateIntextCitationsToNotes(ByVal targetRange As Range)
         Dim insertRange As Range
         Set insertRange = ActiveDocument.Range(insertPosition, insertPosition)
         FieldCreateNoteCitationAtRange insertRange, convertedData
+NextCitation:
     Next i
     Exit Sub
 
@@ -868,13 +957,14 @@ Public Sub FieldMigrateNoteCitationsToIntext(ByVal targetRange As Range)
         Dim note As Footnote
         Dim data As Object
         Set note = fd("note")
-        Set data = fd("data")
+        Set data = FieldReadData(fd("field"))
+        If data Is Nothing Then GoTo NextNote
 
         Dim insertPosition As Long
         insertPosition = note.Reference.Start
 
         Dim convertedData As Object
-        Set convertedData = FieldCreatePlaceholderIntextCitationData(DictKeyString(data, "id"), DictKeyObject(data, "source"))
+        Set convertedData = FieldCreatePlaceholderIntextCitationData(CStr(fd("id")), DictKeyObject(data, "source"))
 
         FieldRemoveFootnoteSafely note
 
@@ -885,6 +975,7 @@ Public Sub FieldMigrateNoteCitationsToIntext(ByVal targetRange As Range)
         Dim insertRange As Range
         Set insertRange = ActiveDocument.Range(insertPosition, insertPosition)
         FieldCreateIntextCitationAtRange insertRange, convertedData
+NextNote:
     Next i
     Exit Sub
 
@@ -1391,35 +1482,21 @@ Private Function CreateInlineMark(ByVal markType As String, _
     Set CreateInlineMark = mark
 End Function
 
-Private Function MakeFieldAndData(ByVal fld As Field, ByVal data As Object) As Collection
+Private Function MakeFieldAndId(ByVal fld As Field, ByVal id As String) As Collection
     Dim result As Collection
     Set result = New Collection
+    result.Add id, "id"
     result.Add fld, "field"
-    result.Add data, "data"
-
-    ' The collector has already parsed Field.Data. Retain the decisive rich-
-    ' text object in the refresh snapshot so the response loop does not need
-    ' to retrieve or parse the field again.
-    Dim content As Object
-    Set content = DictKeyObject(data, "content")
-    result.Add content, "content"
-    Set MakeFieldAndData = result
+    Set MakeFieldAndId = result
 End Function
 
-Private Function MakeNoteFieldAndData(ByVal note As Footnote, ByVal fld As Field, ByVal data As Object) As Collection
+Private Function MakeNoteFieldAndId(ByVal note As Footnote, ByVal fld As Field, ByVal id As String) As Collection
     Dim result As Collection
     Set result = New Collection
+    result.Add id, "id"
     result.Add note, "note"
     result.Add fld, "field"
-    result.Add data, "data"
-
-    Dim content As Object
-    Dim reference As Object
-    Set content = DictKeyObject(data, "content")
-    result.Add content, "content"
-    Set reference = DictKeyObject(data, "reference")
-    result.Add reference, "reference"
-    Set MakeNoteFieldAndData = result
+    Set MakeNoteFieldAndId = result
 End Function
 
 Private Function FindWordStyle(ByVal styleName As String) As Style

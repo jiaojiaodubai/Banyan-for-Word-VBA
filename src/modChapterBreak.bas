@@ -25,13 +25,14 @@ Option Explicit
 '   FindPreviousChapterBreak() -> Collection { "field", "data" } or Nothing
 '   FindNextChapterBreak()     -> Collection { "field", "data" } or Nothing
 '   GetUpdateRange()           -> Word.Range between adjacent chapter breaks
-'   IsChapterBreak(data)       -> Boolean
 '   CanInsertChapterBreakAtSelection() -> Boolean
 '
 ' Dependencies: modJson, modI10n, modPreference
 ' ============================================================================
 
 ' --- Localization strings (match WPS) ---
+' The prompt doubles as the field code: keep the marker that modField's
+' FIELD_CODE_CHAPTER_* look for.
 Private Const CB_PROMPT_ZH As String = " ==========Banyan章节分隔符（请勿编辑）========== "
 Private Const CB_PROMPT_EN As String = " ==========Banyan chapter break (Do not edit)========== "
 
@@ -211,24 +212,6 @@ ErrHandler:
 End Function
 
 
-' --- IsChapterBreak ---
-
-Public Function IsChapterBreak(ByVal data As Variant) As Boolean
-    If Not DictIsDictionary(data) Then Exit Function
-    If DictKeyString(data, "type") <> "chapter-break" Then Exit Function
-    If Not DictKeyIsDict(data, "style") Then Exit Function
-    If Not IsPrefStyle(DictKeyObject(data, "style")) Then Exit Function
-    If Not DictKeyIsDict(data, "content") Then Exit Function
-    If Not FieldIsRichText(DictKeyObject(data, "content")) Then Exit Function
-
-    If DictHasKey(data, "extraSource") Then
-        If Not IsOptionalCitationSource(DictKeyValue(data, "extraSource")) Then Exit Function
-    End If
-
-    IsChapterBreak = True
-End Function
-
-
 ' --- CanInsertChapterBreakAtSelection ---
 ' Silent predicate matching WPS canInsertChapterBreakAtSelection().
 
@@ -291,14 +274,12 @@ Private Sub EnsureCaretInMainText()
     If Selection.Range.Fields.Count > 0 Then
         Dim chkField As Field
         Set chkField = Selection.Range.Fields(1)
-        If chkField.Type = wdFieldAddin Then
-            If IsChapterBreak(FieldReadData(chkField)) Then
-                Dim afterRange As Range
-                Set afterRange = chkField.Result.Duplicate
-                afterRange.Collapse wdCollapseEnd
-                afterRange.Select
-                Exit Sub
-            End If
+        If FieldHasCodeKind(chkField, FIELD_KIND_CHAPTER) Then
+            Dim afterRange As Range
+            Set afterRange = chkField.Result.Duplicate
+            afterRange.Collapse wdCollapseEnd
+            afterRange.Select
+            Exit Sub
         End If
     End If
 
@@ -342,14 +323,12 @@ Private Function FindPreviousChapterBreakByPosition() As Collection
     On Error GoTo ErrHandler
 
     Dim fld As Field
-    Dim data As Object
     Set fld = Selection.PreviousField
 
     Do While Not fld Is Nothing
         If IsMainTextAddInField(fld) Then
-            Set data = FieldReadData(fld)
-            If IsChapterBreak(data) Then
-                Set FindPreviousChapterBreakByPosition = MakeFieldAndData(fld, data)
+            If FieldHasCodeKind(fld, FIELD_KIND_CHAPTER) Then
+                Set FindPreviousChapterBreakByPosition = MakeFieldAndData(fld, FieldReadData(fld))
                 Exit Function
             End If
         End If
@@ -366,14 +345,12 @@ Private Function FindNextChapterBreakByPosition() As Collection
     On Error GoTo ErrHandler
 
     Dim fld As Field
-    Dim data As Object
     Set fld = Selection.NextField
 
     Do While Not fld Is Nothing
         If IsMainTextAddInField(fld) Then
-            Set data = FieldReadData(fld)
-            If IsChapterBreak(data) Then
-                Set FindNextChapterBreakByPosition = MakeFieldAndData(fld, data)
+            If FieldHasCodeKind(fld, FIELD_KIND_CHAPTER) Then
+                Set FindNextChapterBreakByPosition = MakeFieldAndData(fld, FieldReadData(fld))
                 Exit Function
             End If
         End If

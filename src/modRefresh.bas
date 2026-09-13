@@ -320,34 +320,37 @@ Private Function RefreshIntextRange(ByVal targetRange As Range, _
         Exit Function
     End If
 
+    ' Cache what this request phase reads ("json" + "data") for the update loop.
     Dim contexts As Collection
     Set contexts = New Collection
 
-    Dim requestPairs As Collection
-    Set requestPairs = New Collection
-
-    ' Keep the initial field/data objects for this refresh call only.
-    Dim fieldSnapshot As Object
-    Set fieldSnapshot = BuildCitationFieldSnapshot(pairs)
-
     Dim fd As Variant
+    Dim data As Object
+    Dim localJson As String
     For Each fd In pairs
-        Dim data As Object
-        Dim fld As Field
-        Set fld = fd("field")
-        Set data = fd("data")
-
-        Dim context As Object
-        Set context = BuildCitationContext(fld, data)
-        contexts.Add context
-        requestPairs.Add MakeFieldContextPair(fld, context, data)
+        Dim sourceField As Field
+        Set sourceField = fd("field")
+        Set data = FieldReadDataText(sourceField, localJson)
+        fd.Add localJson, "json"
+        fd.Add data, "data"
+        If data Is Nothing Then
+            RefreshLogWarn "Could not read data of in-text citation " & CStr(fd("id")) & ", skipping."
+        Else
+            Dim context As Object
+            Set context = BuildCitationContext(sourceField, data)
+            contexts.Add context
+        End If
     Next fd
+
+    If contexts.Count = 0 Then
+        RefreshLogWarn "No readable in-text citation data; skipping this chapter."
+        Exit Function
+    End If
 
     Dim respond As Object
     Set respond = RequestRefresh(pref("style"), contexts, syncItems)
     If respond Is Nothing Then
         RefreshLogWarn "Could not get response from /refresh, skipping this chapter."
-        Set fieldSnapshot = Nothing
         Exit Function
     End If
 
@@ -355,52 +358,32 @@ Private Function RefreshIntextRange(ByVal targetRange As Range, _
     Set responseIndex = BuildCitationResponseIndex(respond("citations"))
 
     Dim didUpdateCitation As Boolean
-    Dim pair As Variant
-    For Each pair In requestPairs
-        Dim currentContent As Object
-        Dim snapshotPair As Collection
-        Set snapshotPair = FindCitationSnapshot(fieldSnapshot, pair)
-        If snapshotPair Is Nothing Then
-            Set currentContent = DictKeyObject(pair("data"), "content")
-        Else
-            Set currentContent = snapshotPair("content")
-        End If
-        Dim updatedData As Object
-        Set updatedData = FindCitationById(responseIndex, DictKeyString(pair("context"), "id"))
+    Dim citationId As String
+    Dim updatedData As Object
+    Dim targetField As Field
+    Dim nextJson As String
+    For Each fd In pairs
+        citationId = CStr(fd("id"))
+        Set updatedData = FindCitationById(responseIndex, citationId)
         If updatedData Is Nothing Then
-            RefreshLogWarn "No updated data found for citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
+            RefreshLogWarn "No updated data found for citation with id " & citationId & ", skipping."
         ElseIf Not FieldIsIntextCitation(updatedData) Then
-            RefreshLogWarn "Updated data for citation with id " & DictKeyString(pair("context"), "id") & " is not a valid in-text citation, skipping."
+            RefreshLogWarn "Updated data for citation with id " & citationId & " is not a valid in-text citation, skipping."
         Else
-            Dim contentChanged As Boolean
-            Dim updatedContent As Object
-            Set updatedContent = DictKeyObject(updatedData, "content")
-            contentChanged = Not FieldRichTextEquals(currentContent, updatedContent)
-            Dim targetField As Field
-            If snapshotPair Is Nothing Then
-                Set targetField = pair("field")
-            Else
-                Set targetField = snapshotPair("field")
-            End If
+            Set targetField = fd("field")
 
-            ' Source is authoritative response data but does not itself decide
-            ' the Word result. Always persist it; render only when content differs.
-            If FieldWriteData(targetField, updatedData) Then
-                didUpdateCitation = True
-            Else
-                RefreshLogWarn "Failed to write updated data for citation with id " & DictKeyString(pair("context"), "id") & ", skipping render."
-                GoTo NextIntextCitation
-            End If
-            If contentChanged Then
-                FieldRenderStyledFieldWithData targetField, updatedData, DictKeyObject(updatedData, "content")
+            ' Skip when the response matches the text read before the request.
+            nextJson = JsonStringify(updatedData)
+            If Len(nextJson) = 0 Then
+                RefreshLogWarn "Could not serialize updated data for citation with id " & citationId & ", skipping."
+            ElseIf Not FieldTextEquals(CStr(fd("json")), nextJson) Then
+                If ApplyIntextCitationData(targetField, updatedData, citationId, fd("data")) Then didUpdateCitation = True
             End If
         End If
-NextIntextCitation:
-    Next pair
+    Next fd
 
     RefreshIntextRange = (didUpdateCitation Or RefreshBibliographyInRange(targetRange, respond, pref))
     Set responseIndex = Nothing
-    Set fieldSnapshot = Nothing
 End Function
 
 
@@ -420,32 +403,33 @@ Private Function RefreshNoteRange(ByVal targetRange As Range, _
     Dim contexts As Collection
     Set contexts = New Collection
 
-    Dim requestPairs As Collection
-    Set requestPairs = New Collection
-
-    ' Rebuilding notes changes live ranges; retain the initial field/data
-    ' objects only for this refresh call.
-    Dim fieldSnapshot As Object
-    Set fieldSnapshot = BuildCitationFieldSnapshot(pairs)
-
     Dim fd As Variant
+    Dim data As Object
+    Dim localJson As String
     For Each fd In pairs
-        Dim data As Object
-        Dim fld As Field
-        Set fld = fd("field")
-        Set data = fd("data")
-
-        Dim context As Object
-        Set context = BuildCitationContext(fld, data)
-        contexts.Add context
-        requestPairs.Add MakeNoteContextPair(fd("note"), fld, context, data)
+        Dim sourceField As Field
+        Set sourceField = fd("field")
+        Set data = FieldReadDataText(sourceField, localJson)
+        fd.Add localJson, "json"
+        fd.Add data, "data"
+        If data Is Nothing Then
+            RefreshLogWarn "Could not read data of note citation " & CStr(fd("id")) & ", skipping."
+        Else
+            Dim context As Object
+            Set context = BuildCitationContext(sourceField, data)
+            contexts.Add context
+        End If
     Next fd
+
+    If contexts.Count = 0 Then
+        RefreshLogWarn "No readable note citation data; skipping this chapter."
+        Exit Function
+    End If
 
     Dim respond As Object
     Set respond = RequestRefresh(pref("style"), contexts, syncItems)
     If respond Is Nothing Then
         RefreshLogWarn "Could not get response from /refresh, skipping this chapter."
-        Set fieldSnapshot = Nothing
         Exit Function
     End If
 
@@ -454,66 +438,145 @@ Private Function RefreshNoteRange(ByVal targetRange As Range, _
 
     Dim didUpdateCitation As Boolean
     Dim i As Long
-    For i = requestPairs.Count To 1 Step -1
-        Dim pair As Collection
-        Set pair = requestPairs(i)
-
-        Dim updatedData As Object
-        Set updatedData = FindCitationById(responseIndex, DictKeyString(pair("context"), "id"))
+    Dim pair As Collection
+    Dim citationId As String
+    Dim updatedData As Object
+    Dim targetNote As Footnote
+    Dim targetField As Field
+    Dim nextJson As String
+    ' Rebuilding a footnote recreates live ranges: walk the list backwards.
+    For i = pairs.Count To 1 Step -1
+        Set pair = pairs(i)
+        citationId = CStr(pair("id"))
+        Set updatedData = FindCitationById(responseIndex, citationId)
         If updatedData Is Nothing Then
-            RefreshLogWarn "No updated data found for citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
+            RefreshLogWarn "No updated data found for citation with id " & citationId & ", skipping."
         ElseIf Not FieldIsNoteCitation(updatedData) Then
-            RefreshLogWarn "Updated data for citation with id " & DictKeyString(pair("context"), "id") & " is not a valid note citation, skipping."
+            RefreshLogWarn "Updated data for citation with id " & citationId & " is not a valid note citation, skipping."
         Else
-            Dim currentContent As Object
-            Dim currentReference As Object
-            Dim snapshotPair As Collection
-            Set snapshotPair = FindCitationSnapshot(fieldSnapshot, pair)
-            If snapshotPair Is Nothing Then
-                Set currentContent = DictKeyObject(pair("data"), "content")
-                Set currentReference = DictKeyObject(pair("data"), "reference")
-            Else
-                Set currentContent = snapshotPair("content")
-                Set currentReference = snapshotPair("reference")
-            End If
-
-            Dim targetNote As Footnote
-            Dim targetField As Field
             Set targetNote = pair("note")
             Set targetField = pair("field")
-            If Not snapshotPair Is Nothing Then
-                Set targetNote = snapshotPair("note")
-                Set targetField = snapshotPair("field")
-            End If
 
-            Dim presentationChanged As Boolean
-            presentationChanged = Not FieldRichTextEquals(currentContent, DictKeyObject(updatedData, "content"))
-            If Not presentationChanged Then
-                presentationChanged = Not FieldRichTextEquals(currentReference, DictKeyObject(updatedData, "reference"))
-            End If
-            If presentationChanged Then
-                ' Content changes require a clean field replacement; reference
-                ' changes additionally require footnote recreation.
-                Dim rebuilt As Collection
-                Set rebuilt = FieldRebuildNoteCitationAtRange(targetNote, targetField, updatedData)
-                If rebuilt Is Nothing Then
-                    RefreshLogWarn "Failed to rebuild note citation with id " & DictKeyString(pair("context"), "id") & ", skipping."
-                Else
-                    didUpdateCitation = True
-                End If
-            ElseIf FieldWriteData(targetField, updatedData) Then
-                ' A source-only change is persisted without touching the field
-                ' result or footnote structure.
-                didUpdateCitation = True
-            Else
-                RefreshLogWarn "Failed to write updated data for note citation with id " & DictKeyString(pair("context"), "id") & "."
+            nextJson = JsonStringify(updatedData)
+            If Len(nextJson) = 0 Then
+                RefreshLogWarn "Could not serialize updated data for citation with id " & citationId & ", skipping."
+            ElseIf Not FieldTextEquals(CStr(pair("json")), nextJson) Then
+                If ApplyNoteCitationData(targetNote, targetField, updatedData, citationId, pair("data")) Then didUpdateCitation = True
             End If
         End If
     Next i
 
     RefreshNoteRange = (didUpdateCitation Or RefreshBibliographyInRange(targetRange, respond, pref))
     Set responseIndex = Nothing
-    Set fieldSnapshot = Nothing
+End Function
+
+
+' --- Citation data application ---
+
+' Persist response data on an in-text citation field; render only when the rich
+' text changed. currentData is the local data cached by the request phase.
+Private Function ApplyIntextCitationData(ByVal targetField As Field, _
+                                         ByVal updatedData As Object, _
+                                         ByVal citationId As String, _
+                                         ByVal currentData As Object) As Boolean
+    On Error GoTo ErrHandler
+
+    Dim contentChanged As Boolean
+    If currentData Is Nothing Then
+        ' Unreadable local data: the response decides data and result alike.
+        contentChanged = True
+    Else
+        contentChanged = Not FieldRichTextEquals( _
+            DictKeyObject(currentData, "content"), DictKeyObject(updatedData, "content"))
+    End If
+
+    Dim writeData As Object
+    Set writeData = MergeCitationData(currentData, updatedData)
+
+    If Not FieldWriteData(targetField, writeData) Then
+        RefreshLogWarn "Failed to write updated data for citation with id " & citationId & ", skipping render."
+        Exit Function
+    End If
+
+    If contentChanged Then
+        FieldRenderStyledFieldWithData targetField, writeData, DictKeyObject(writeData, "content")
+    End If
+    ApplyIntextCitationData = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.ApplyIntextCitationData"
+    ApplyIntextCitationData = False
+End Function
+
+' Persist response data on a note citation field. The reference decides first:
+' a change replaces the field (and the footnote), otherwise only the data is
+' written. currentData is the local data cached by the request phase.
+Private Function ApplyNoteCitationData(ByVal targetNote As Footnote, _
+                                       ByVal targetField As Field, _
+                                       ByVal updatedData As Object, _
+                                       ByVal citationId As String, _
+                                       ByVal currentData As Object) As Boolean
+    On Error GoTo ErrHandler
+
+    Dim presentationChanged As Boolean
+    If currentData Is Nothing Then
+        presentationChanged = True
+    Else
+        ' Reference first: it is the shorter rich-text object, so a difference
+        ' is found (and acted on) sooner than in the content.
+        presentationChanged = Not FieldRichTextEquals( _
+            DictKeyObject(currentData, "reference"), DictKeyObject(updatedData, "reference"))
+        If Not presentationChanged Then
+            presentationChanged = Not FieldRichTextEquals( _
+                DictKeyObject(currentData, "content"), DictKeyObject(updatedData, "content"))
+        End If
+    End If
+
+    Dim writeData As Object
+    Set writeData = MergeCitationData(currentData, updatedData)
+
+    If presentationChanged Then
+        ' Content changes require a clean field replacement; reference changes
+        ' additionally require footnote recreation.
+        Dim rebuilt As Collection
+        Set rebuilt = FieldRebuildNoteCitationAtRange(targetNote, targetField, writeData)
+        If rebuilt Is Nothing Then
+            RefreshLogWarn "Failed to rebuild note citation with id " & citationId & ", skipping."
+            Exit Function
+        End If
+    ElseIf Not FieldWriteData(targetField, writeData) Then
+        ' A source-only change is persisted without touching the field result
+        ' or the footnote structure.
+        RefreshLogWarn "Failed to write updated data for note citation with id " & citationId & "."
+        Exit Function
+    End If
+
+    ApplyNoteCitationData = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.ApplyNoteCitationData"
+    ApplyNoteCitationData = False
+End Function
+
+' The response wins, local-only keys are kept; when the local data adds nothing
+' the response object itself is used so the stored text keeps matching it.
+Private Function MergeCitationData(ByVal currentData As Object, ByVal updatedData As Object) As Object
+    If currentData Is Nothing Then
+        Set MergeCitationData = updatedData
+        Exit Function
+    End If
+
+    If currentData.Count <= updatedData.Count Then
+        Set MergeCitationData = updatedData
+        Exit Function
+    End If
+
+    currentData("source") = updatedData("source")
+    If DictHasKey(updatedData, "content") Then Set currentData("content") = DictKeyObject(updatedData, "content")
+    If DictHasKey(updatedData, "reference") Then Set currentData("reference") = DictKeyObject(updatedData, "reference")
+    Set MergeCitationData = currentData
 End Function
 
 
@@ -637,11 +700,22 @@ End Function
 
 Private Function BibliographyFieldId(ByVal fld As Field) As String
     On Error GoTo ErrHandler
-    Const CODE_PREFIX As String = "ADDIN BANYAN_BIBLIOGRAPHY "
-    Dim codeText As String
-    codeText = Trim$(fld.Code.Text)
-    If StrComp(Left$(codeText, Len(CODE_PREFIX)), CODE_PREFIX, vbTextCompare) <> 0 Then Exit Function
-    BibliographyFieldId = Trim$(Mid$(codeText, Len(CODE_PREFIX) + 1))
+
+    Dim kind As String
+    Dim codeId As String
+    If Not FieldParseCode(fld.Code.Text, kind, codeId) Then Exit Function
+    If kind <> FIELD_KIND_BIBLIOGRAPHY Then Exit Function
+
+    If Len(codeId) > 0 Then
+        BibliographyFieldId = codeId
+        Exit Function
+    End If
+
+    ' A line written before the code contract carries no id in its code.
+    Dim data As Object
+    Set data = FieldReadData(fld)
+    If data Is Nothing Then Exit Function
+    BibliographyFieldId = Trim$(DictKeyString(data, "id"))
     Exit Function
 
 ErrHandler:
@@ -748,10 +822,15 @@ Private Function UpdateBibliographyField(ByVal fld As Field, _
     Dim nextJson As String
     nextJson = JsonStringify(nextData)
     If Len(nextJson) = 0 Then Exit Function
-    If fld.Data = nextJson Then Exit Function
+
+    ' One read: the text decides the no-op case, then gets parsed if not.
+    Dim currentJson As String
+    currentJson = FieldDataText(fld)
+    If Len(currentJson) = 0 Then Exit Function
+    If FieldTextEquals(currentJson, nextJson) Then Exit Function
 
     Dim currentData As Object
-    Set currentData = FieldReadData(fld)
+    Set currentData = JsonParse(currentJson)
     If currentData Is Nothing Then Exit Function
     Dim renderChanged As Boolean
     renderChanged = Not FieldContentEquals(currentData, nextData)
@@ -777,7 +856,7 @@ End Function
 Private Function CreateBibliographyFieldAtRange(ByVal targetRange As Range, _
                                                  ByVal data As Object) As Field
     Set CreateBibliographyFieldAtRange = FieldCreateRawAddinField( _
-        targetRange, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+        targetRange, FieldBibliographyCode(DictKeyString(data, "id")))
 End Function
 
 Private Function BibliographyWholeFieldRange(ByVal fld As Field) As Range
@@ -965,12 +1044,14 @@ Private Function CollectBibliographyFieldsInRange(ByVal targetRange As Range) As
     Set result = New Collection
 
     Dim fld As Field
+    Dim kind As String
+    Dim id As String
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
-            If Not FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then GoTo NextBibliographyField
-            result.Add fld
+            If FieldParseCode(fld.Code.Text, kind, id) Then
+                If kind = FIELD_KIND_BIBLIOGRAPHY Then result.Add fld
+            End If
         End If
-NextBibliographyField:
     Next fld
 
     Set CollectBibliographyFieldsInRange = result
@@ -1092,68 +1173,6 @@ Private Function BuildCitationResponseIndex(ByVal citations As Collection) As Ob
 ErrHandler:
     DiagnosticsReraiseIfDev "modRefresh.BuildCitationResponseIndex"
     Set BuildCitationResponseIndex = Nothing
-End Function
-
-Private Function BuildCitationFieldSnapshot(ByVal pairs As Collection) As Object
-    On Error GoTo ErrHandler
-
-    Dim result As Object
-    Set result = New Dictionary
-
-    Dim pair As Variant
-    For Each pair In pairs
-        Dim dataId As String
-        dataId = DictKeyString(pair("data"), "id")
-        If Len(dataId) > 0 Then Set result(dataId) = pair
-    Next pair
-
-    Set BuildCitationFieldSnapshot = result
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modRefresh.BuildCitationFieldSnapshot"
-    Set BuildCitationFieldSnapshot = Nothing
-End Function
-
-Private Function FindCitationSnapshot(ByVal snapshot As Object, _
-                                      ByVal pair As Collection) As Collection
-    On Error GoTo ErrHandler
-    If snapshot Is Nothing Then Exit Function
-
-    Dim citationId As String
-    citationId = DictKeyString(pair("context"), "id")
-    If Len(citationId) > 0 Then
-        If snapshot.Exists(citationId) Then Set FindCitationSnapshot = snapshot(citationId)
-    End If
-    Exit Function
-
-ErrHandler:
-    DiagnosticsReraiseIfDev "modRefresh.FindCitationSnapshot"
-    Set FindCitationSnapshot = Nothing
-End Function
-
-Private Function MakeFieldContextPair(ByVal fld As Field, _
-                                      ByVal context As Object, _
-                                      ByVal data As Object) As Collection
-    Dim result As Collection
-    Set result = New Collection
-    result.Add fld, "field"
-    result.Add context, "context"
-    result.Add data, "data"
-    Set MakeFieldContextPair = result
-End Function
-
-Private Function MakeNoteContextPair(ByVal note As Footnote, _
-                                     ByVal fld As Field, _
-                                     ByVal context As Object, _
-                                     ByVal data As Object) As Collection
-    Dim result As Collection
-    Set result = New Collection
-    result.Add note, "note"
-    result.Add fld, "field"
-    result.Add context, "context"
-    result.Add data, "data"
-    Set MakeNoteContextPair = result
 End Function
 
 Private Function SameStyle(ByVal previousStyle As Object, ByVal nextStyle As Object) As Boolean

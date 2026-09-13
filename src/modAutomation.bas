@@ -396,7 +396,7 @@ Public Function AutomationInsertPendingBibliography() As Boolean
     Set cursor = DocumentEndRange()
 
     Dim fld As Field
-    Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+    Set fld = FieldCreateRawAddinField(cursor, FieldBibliographyCode(DictKeyString(data, "id")))
     If fld Is Nothing Then Exit Function
     If Not FieldWriteData(fld, data) Then Exit Function
 

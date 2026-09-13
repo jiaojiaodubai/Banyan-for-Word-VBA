@@ -228,7 +228,7 @@ Private Function CreatePendingBibliographyField(ByVal targetRange As Range, ByVa
     cursor.Collapse wdCollapseEnd
 
     Dim fld As Field
-    Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+    Set fld = FieldCreateRawAddinField(cursor, FieldBibliographyCode(DictKeyString(data, "id")))
     If fld Is Nothing Then Exit Function
 
     FieldWriteData fld, data
@@ -280,16 +280,14 @@ Private Function CollectBibliographyFieldsInRange(ByVal targetRange As Range) As
     Set result = New Collection
 
     Dim fld As Field
-    Dim data As Object
+    Dim kind As String
+    Dim id As String
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
-            If Not FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then GoTo NextBibliographyField
-            Set data = FieldReadData(fld)
-            If FieldIsBibliographyTitle(data) Or FieldIsBibliographyEntry(data) Then
-                result.Add fld
+            If FieldParseCode(fld.Code.Text, kind, id) Then
+                If kind = FIELD_KIND_BIBLIOGRAPHY Then result.Add fld
             End If
         End If
-NextBibliographyField:
     Next fld
 
     Set CollectBibliographyFieldsInRange = result
@@ -310,7 +308,7 @@ Private Sub InsertBibliography(ByVal targetRange As Range, ByVal lines As Collec
     For i = 1 To lines.Count
         Set line = lines(i)
 
-        fieldCode = "BANYAN_BIBLIOGRAPHY " & DictKeyString(line, "id")
+        fieldCode = FieldBibliographyCode(DictKeyString(line, "id"))
 
         Set fld = FieldCreateRawAddinField(cursor, fieldCode)
         If fld Is Nothing Then Exit Sub
@@ -390,9 +388,6 @@ Private Sub EditBibliographyEntry(ByVal fld As Field, ByVal pref As Object)
 
     Dim updatedLine As Object
     Set updatedLine = response("line")
-    ' Only the render depends on the content. Persisting the returned line and
-    ' refreshing the bookmark are cheap and keep Field.Data and the hyperlink
-    ' target in sync with the server, so they run unconditionally.
     Dim contentChanged As Boolean
     contentChanged = Not FieldContentEquals(currentLine, updatedLine)
 
@@ -456,9 +451,13 @@ Private Sub AddIntextContexts(ByVal targetRange As Range, ByVal byId As Object)
 
     Dim fd As Variant
     For Each fd In FieldCollectIntextCitationFieldsInRange(targetRange)
-        Dim context As Object
-        Set context = BuildCitationContext(fd("field"), fd("data"))
-        AddContextById byId, context
+        Dim data As Object
+        Set data = FieldReadData(fd("field"))
+        If Not data Is Nothing Then
+            Dim context As Object
+            Set context = BuildCitationContext(fd("field"), data)
+            AddContextById byId, context
+        End If
     Next fd
     Exit Sub
 
@@ -471,9 +470,13 @@ Private Sub AddNoteContexts(ByVal targetRange As Range, ByVal byId As Object)
 
     Dim fd As Variant
     For Each fd In FieldCollectNoteCitationFootnotesInRange(targetRange)
-        Dim context As Object
-        Set context = BuildCitationContext(fd("field"), fd("data"))
-        AddContextById byId, context
+        Dim data As Object
+        Set data = FieldReadData(fd("field"))
+        If Not data Is Nothing Then
+            Dim context As Object
+            Set context = BuildCitationContext(fd("field"), data)
+            AddContextById byId, context
+        End If
     Next fd
     Exit Sub
 

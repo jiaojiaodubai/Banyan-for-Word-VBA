@@ -35,6 +35,8 @@ Public Function RunTests() As String
     report = report & TestResult("migrate intext -> note", TestFieldMigrateIntextToNotes()) & vbCrLf
     report = report & TestResult("migrate note -> intext", TestFieldMigrateNotesToIntext()) & vbCrLf
     report = report & TestResult("collectors in range", TestFieldCollectors()) & vbCrLf
+    report = report & TestResult("field code contract", TestFieldCodeContract()) & vbCrLf
+    report = report & TestResult("data text read (lazy parsing)", TestFieldDataTextRead()) & vbCrLf
     report = report & TestResult("validators", TestFieldValidators()) & vbCrLf
     report = report & TestResult("style identifier", TestFieldStyleIdentifier()) & vbCrLf
     report = report & TestResult("content comparison", TestFieldContentComparison()) & vbCrLf
@@ -976,14 +978,19 @@ Private Function TestFieldCollectors() As Boolean
     ok = (intextCol.Count = 2)
     ok = ok And (noteCol.Count = 1)
     If ok Then
-        Dim cachedContent As Object
-        Set cachedContent = intextCol(1)("content")
-        ok = FieldRichTextEquals(cachedContent, DictKeyObject(intextCol(1)("data"), "content"))
-        Set cachedContent = noteCol(1)("content")
-        ok = ok And FieldRichTextEquals(cachedContent, DictKeyObject(noteCol(1)("data"), "content"))
-        Dim cachedReference As Object
-        Set cachedReference = noteCol(1)("reference")
-        ok = ok And FieldRichTextEquals(cachedReference, DictKeyObject(noteCol(1)("data"), "reference"))
+        ' Pairs are {id, field}; the id comes from the code.
+        ok = (CStr(intextCol(1)("id")) = "test-col-1")
+        ok = ok And (CStr(intextCol(2)("id")) = "test-col-2")
+        ok = ok And (CStr(noteCol(1)("id")) = "test-col-3")
+
+        Dim intextField As Field
+        Dim noteField As Field
+        Set intextField = intextCol(1)("field")
+        Set noteField = noteCol(1)("field")
+        ok = ok And FieldHasCodeKind(intextField, FIELD_KIND_CITATION)
+        ok = ok And FieldHasCodeKind(noteField, FIELD_KIND_CITATION)
+        ok = ok And (CStr(FieldReadData(intextField)("id")) = CStr(intextCol(1)("id")))
+        ok = ok And (CStr(FieldReadData(noteField)("id")) = CStr(noteCol(1)("id")))
     End If
 
     FieldRemoveFieldSafely f1
@@ -997,6 +1004,129 @@ Private Function TestFieldCollectors() As Boolean
 
 ErrHandler:
     TestFieldCollectors = False
+End Function
+
+' The field code carries the field type and the data id.
+Private Function TestFieldCodeContract() As Boolean
+    On Error GoTo ErrHandler
+    If ActiveDocument Is Nothing Then Exit Function
+
+    Dim kind As String
+    Dim id As String
+
+    ' Code builders
+    If FieldCitationCode("abc-1") <> "BANYAN_CITATION abc-1" Then Exit Function
+    If FieldBibliographyCode("entry-1") <> "BANYAN_BIBLIOGRAPHY entry-1" Then Exit Function
+
+    ' A real Word code carries the ADDIN prefix and padding spaces.
+    If Not FieldParseCode(" ADDIN BANYAN_CITATION abc-1 ", kind, id) Then Exit Function
+    If kind <> FIELD_KIND_CITATION Or id <> "abc-1" Then Exit Function
+    If Not FieldParseCode("ADDIN BANYAN_BIBLIOGRAPHY entry-1", kind, id) Then Exit Function
+    If kind <> FIELD_KIND_BIBLIOGRAPHY Or id <> "entry-1" Then Exit Function
+
+    ' The chapter-break prompt is the code (no id).
+    If Not FieldParseCode(" ADDIN  ==========Banyan chapter break (Do not edit)==========  ", kind, id) Then Exit Function
+    If kind <> FIELD_KIND_CHAPTER Then Exit Function
+
+    ' A field written before the contract has no id in its code.
+    If Not FieldParseCode("ADDIN BANYAN_BIBLIOGRAPHY", kind, id) Then Exit Function
+    If kind <> FIELD_KIND_BIBLIOGRAPHY Or Len(id) <> 0 Then Exit Function
+
+    ' Foreign and malformed codes are not Banyan fields.
+    If FieldParseCode("ADDIN REF _Ref123 \h", kind, id) Then Exit Function
+    If FieldParseCode("", kind, id) Then Exit Function
+    If FieldParseCode("BANYAN_SOMETHING else", kind, id) Then Exit Function
+
+    ' Length short-circuit plus equality.
+    If Not FieldTextEquals("", "") Then Exit Function
+    If Not FieldTextEquals("same", "same") Then Exit Function
+    If FieldTextEquals("same", "diff") Then Exit Function
+    If FieldTextEquals("same", "same-longer") Then Exit Function
+
+    ' A created field carries its id in the code.
+    Dim doc As Document
+    Set doc = ActiveDocument
+    Dim startPos As Long
+    startPos = doc.Content.End
+
+    Dim data As Object
+    Set data = FieldCreatePlaceholderIntextCitationData("contract-1")
+    Dim fld As Field
+    Set fld = FieldCreateIntextCitationAtRange(TestDocEndRange(doc), data)
+    If fld Is Nothing Then Exit Function
+
+    If Not FieldParseCode(fld.Code.Text, kind, id) Then GoTo CleanUp
+    If kind <> FIELD_KIND_CITATION Or id <> "contract-1" Then GoTo CleanUp
+    If Not FieldHasCodeKind(fld, FIELD_KIND_CITATION) Then GoTo CleanUp
+
+    TestFieldCodeContract = True
+
+CleanUp:
+    FieldRemoveFieldSafely fld
+    On Error Resume Next
+    doc.Range(startPos, doc.Content.End).Delete
+    On Error GoTo 0
+    Exit Function
+
+ErrHandler:
+    TestFieldCodeContract = False
+End Function
+
+' FieldDataText / FieldReadDataText must match the stored text.
+Private Function TestFieldDataTextRead() As Boolean
+    On Error GoTo ErrHandler
+    If ActiveDocument Is Nothing Then Exit Function
+
+    Dim doc As Document
+    Set doc = ActiveDocument
+    Dim startPos As Long
+    startPos = doc.Content.End
+
+    Dim data As Object
+    Set data = FieldCreatePlaceholderIntextCitationData("readtext-1")
+    Dim fld As Field
+    Set fld = FieldCreateIntextCitationAtRange(TestDocEndRange(doc), data)
+    If fld Is Nothing Then Exit Function
+
+    Dim storedText As String
+    storedText = FieldDataText(fld)
+    If Len(storedText) = 0 Then GoTo CleanUp
+
+    Dim parsed As Object
+    Dim parsedText As String
+    Set parsed = FieldReadDataText(fld, parsedText)
+    If parsed Is Nothing Then GoTo CleanUp
+    If parsedText <> storedText Then GoTo CleanUp
+    If CStr(parsed("id")) <> "readtext-1" Then GoTo CleanUp
+
+    Dim viaWrapper As Object
+    Set viaWrapper = FieldReadData(fld)
+    If viaWrapper Is Nothing Then GoTo CleanUp
+    If CStr(viaWrapper("id")) <> "readtext-1" Then GoTo CleanUp
+
+    ' A field without data reports empty text and no parsed object.
+    Dim raw As Field
+    Set raw = FieldCreateRawAddinField(TestDocEndRange(doc), "BANYAN_CITATION readtext-2")
+    If raw Is Nothing Then GoTo CleanUp
+    If Len(FieldDataText(raw)) <> 0 Then GoTo CleanUp
+    Dim rawParsed As Object
+    Dim rawText As String
+    Set rawParsed = FieldReadDataText(raw, rawText)
+    If Not rawParsed Is Nothing Then GoTo CleanUp
+    If Len(rawText) <> 0 Then GoTo CleanUp
+    FieldRemoveFieldSafely raw
+
+    TestFieldDataTextRead = True
+
+CleanUp:
+    If Not fld Is Nothing Then FieldRemoveFieldSafely fld
+    On Error Resume Next
+    doc.Range(startPos, doc.Content.End).Delete
+    On Error GoTo 0
+    Exit Function
+
+ErrHandler:
+    TestFieldDataTextRead = False
 End Function
 
 Private Function TestFieldValidators() As Boolean

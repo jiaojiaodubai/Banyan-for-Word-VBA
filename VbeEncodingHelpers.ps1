@@ -48,7 +48,37 @@ function Write-TextWithEncoding([string]$Path, [string]$Text, [System.Text.Encod
 }
 
 function Get-VbeImportText([string]$SourcePath) {
-    return (Read-TextWithFallbackEncoding $SourcePath)
+    $text = Read-TextWithFallbackEncoding $SourcePath
+    Assert-DeclarationSectionOrder $text $SourcePath
+    return $text
+}
+
+# Module-level declarations must sit above the first procedure: with the VBE's
+# Compile-On-Demand a Const/Dim/Type below one is not registered and every use
+# fails with "Variable not defined" (in the *using* module). Fail the build here.
+function Assert-DeclarationSectionOrder([string]$Text, [string]$Path) {
+    $lines = (Standardize-LineEndings $Text) -split "`r`n"
+    $ln = 0
+    $depth = 0
+    $firstProcedureLine = 0
+    foreach ($line in $lines) {
+        $ln++
+        if ($line -match '^\s*(Public\s+|Private\s+|Friend\s+)?(Function|Sub|Property\s+(Get|Let|Set))\s') {
+            if ($depth -eq 0 -and $firstProcedureLine -eq 0) { $firstProcedureLine = $ln }
+            $depth++
+            continue
+        }
+        if ($line -match '^\s*End\s+(Function|Sub|Property)\s*$') {
+            if ($depth -gt 0) { $depth-- }
+            continue
+        }
+        if ($depth -eq 0 -and $firstProcedureLine -gt 0 -and
+            $line -match '^(Public\s+|Private\s+|Friend\s+)?(Const|Dim|Static|Type|Enum|Declare)\b') {
+            throw ("$Path line ${ln}: module-level declaration below the first procedure (line $firstProcedureLine). " +
+                   "Move it into the declaration section at the top of the module, otherwise the VBE does not " +
+                   "register it and every use fails with 'Variable not defined'. Offending line: " + $line.Trim())
+        }
+    }
 }
 
 function Write-VbeImportText([string]$TargetPath, [string]$Text) {

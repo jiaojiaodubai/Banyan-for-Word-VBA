@@ -53,9 +53,11 @@ Public Function RunPerf(Optional ByVal sizesCsv As String = "10,50,100", _
     StyleLookupOps repetitions
     StyleGateOps repetitions
     ScaleOps sizes
+    RefreshLoopOps sizes
     PaginationOps sizes
     ProofingOps sizes
     BibliographyOps sizes
+    BibliographyRefreshOps sizes
     JsonAndLookupOps sizes
     ComparisonOps sizes
     TextCompareOps repetitions
@@ -91,6 +93,8 @@ Public Function RunComparisonPerf(Optional ByVal sizesCsv As String = "100,1000"
     For repetition = 1 To repetitions
         Out "[INFO] repetition=" & CStr(repetition)
         ComparisonOps sizes
+        RefreshLoopOps sizes
+        BibliographyRefreshOps sizes
     Next repetition
 
     RunComparisonPerf = m_report
@@ -203,7 +207,7 @@ Private Function CollectPerfBibliographyLines() As Collection
     Set result = New Collection
     Dim fld As Field
     For Each fld In ActiveDocument.Content.Fields
-        If FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then
+        If FieldHasCodeKind(fld, FIELD_KIND_BIBLIOGRAPHY) Then
             Dim data As Object
             Set data = FieldReadData(fld)
             If FieldIsBibliographyTitle(data) Or FieldIsBibliographyEntry(data) Then result.Add data
@@ -242,7 +246,7 @@ Private Function RowMoveAppendRefresh(ByVal lines As Collection, ByVal pref As O
     Set fields = New Collection
     Dim fld As Field
     For Each fld In ActiveDocument.Content.Fields
-        If FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then
+        If FieldHasCodeKind(fld, FIELD_KIND_BIBLIOGRAPHY) Then
             fields.Add fld
         End If
     Next fld
@@ -922,7 +926,7 @@ Private Sub RunScale(ByVal fieldCount As Long, ByVal suppressScreen As Boolean)
     t0 = PerfNow()
     Set pairs = FieldCollectIntextCitationFieldsInRange(ActiveDocument.Content)
     elapsed = PerfElapsed(t0)
-    OutScale "collect+parse", fieldCount, mode, elapsed
+    OutScale "collect", fieldCount, mode, elapsed
 
     Dim pair As Variant
     Dim pageNumber As Long
@@ -955,6 +959,132 @@ Private Sub RunScale(ByVal fieldCount As Long, ByVal suppressScreen As Boolean)
     Next i
     elapsed = PerfElapsed(t0)
     OutScale "render rich", fieldCount, mode, elapsed
+
+    Application.ScreenUpdating = originalScreenUpdating
+    ResetPerfDocument
+End Sub
+
+
+' --- Citation refresh update loop ------------------------------------------
+'
+' Update-loop shapes for citations whose response does not change them:
+'   old: compare cached content, then write data unconditionally
+'   contract v1: read Field.Data, stringify the response, compare
+'   lazy: compare the text cached before the request, then stringify
+' Reading+parsing one Field.Data per citation is a shared phase (measured apart).
+
+Private Sub RefreshLoopOps(ByVal sizes As Collection)
+    Out "[SECTION] citation refresh update loop (response unchanged)"
+    Out "[INFO] old = rich compare + always write; new = stringify + string compare + skip"
+
+    Dim item As Variant
+    For Each item In sizes
+        RunRefreshLoopScale CLng(item)
+    Next item
+    Out ""
+End Sub
+
+Private Sub RunRefreshLoopScale(ByVal fieldCount As Long)
+    ResetPerfDocument
+
+    Dim originalScreenUpdating As Boolean
+    originalScreenUpdating = Application.ScreenUpdating
+    Application.ScreenUpdating = False
+
+    ' Prepare one citation per id, storing exactly the data the response will
+    ' return, so both shapes see a no-op refresh.
+    Dim fields As Collection
+    Dim updates As Collection
+    Dim cachedContent As Collection
+    Set fields = New Collection
+    Set updates = New Collection
+    Set cachedContent = New Collection
+
+    Dim i As Long
+    Dim fld As Field
+    Dim f As Field
+    Dim data As Object
+    Dim citationId As String
+    For i = 1 To fieldCount
+        citationId = "loop-" & CStr(i)
+        Set data = BuildIntextData(citationId, "rich")
+        Set fld = FieldCreateRawAddinField(DocEnd(), "BANYAN_CITATION " & citationId)
+        FieldWriteData fld, data
+        fld.Result.Text = INTEXT_TEXT
+        If i < fieldCount Then DocEnd().InsertAfter " "
+        fields.Add fld
+        updates.Add data
+        cachedContent.Add DictKeyObject(data, "content")
+    Next i
+
+    Dim t0 As Double
+    Dim nextData As Object
+    Dim nextJson As String
+    Dim nextContent As Object
+
+    ' Shared: one read + parse per citation, paid by every design.
+    t0 = PerfNow()
+    For i = 1 To fieldCount
+        Set nextData = FieldReadData(fields(i))
+    Next i
+    OutScale "shared phase (read+parse)", fieldCount, "unchanged", PerfElapsed(t0)
+
+    ' Pre-contract shape: cached rich-text compare, then an unconditional write.
+    Dim unchanged As Long
+    t0 = PerfNow()
+    For i = 1 To fieldCount
+        Set f = fields(i)
+        Set nextData = updates(i)
+        Set nextContent = cachedContent(i)
+        If FieldRichTextEquals(nextContent, DictKeyObject(nextData, "content")) Then unchanged = unchanged + 1
+        FieldWriteData f, nextData
+    Next i
+    OutScale "old shape (rich compare+write)", fieldCount, "unchanged", PerfElapsed(t0)
+
+    ' Contract shape: one stringify and one string compare per citation.
+    Dim skipCount As Long
+    t0 = PerfNow()
+    For i = 1 To fieldCount
+        Set f = fields(i)
+        nextJson = JsonStringify(updates(i))
+        If FieldTextEquals(f.Data, nextJson) Then skipCount = skipCount + 1
+    Next i
+    OutScale "contract v1 (read Data+stringify+compare)", fieldCount, "unchanged", PerfElapsed(t0)
+
+    ' The lazy shape compares text read before the request: no field access.
+    Dim cachedJson As Collection
+    Set cachedJson = New Collection
+    For i = 1 To fieldCount
+        cachedJson.Add FieldDataText(fields(i))
+    Next i
+
+    Dim lazySkip As Long
+    t0 = PerfNow()
+    For i = 1 To fieldCount
+        nextJson = JsonStringify(updates(i))
+        If FieldTextEquals(CStr(cachedJson(i)), nextJson) Then lazySkip = lazySkip + 1
+    Next i
+    OutScale "lazy shape (cached text+stringify+compare)", fieldCount, "unchanged", PerfElapsed(t0)
+
+    ' Cost of the serialization alone, so the comparison stays transparent.
+    Dim jsonLength As Long
+    t0 = PerfNow()
+    For i = 1 To fieldCount
+        nextJson = JsonStringify(updates(i))
+        jsonLength = jsonLength + Len(nextJson)
+    Next i
+    OutScale "new shape (stringify only)", fieldCount, "unchanged", PerfElapsed(t0)
+
+    ' Cost of the stored-data read alone (the fast path's dominant cost).
+    Dim dataText As String
+    Dim dataLength As Long
+    t0 = PerfNow()
+    For i = 1 To fieldCount
+        Set f = fields(i)
+        dataText = f.Data
+        dataLength = dataLength + Len(dataText)
+    Next i
+    OutScale "new shape (read stored data only)", fieldCount, "unchanged", PerfElapsed(t0)
 
     Application.ScreenUpdating = originalScreenUpdating
     ResetPerfDocument
@@ -1032,6 +1162,7 @@ Private Sub RunBibliographyScale(ByVal itemCount As Long)
     Set bibliographyFields = New Collection
     Dim candidate As Field
     Dim readData As Object
+    ' Legacy shape: read + parse every add-in field, then filter by its type.
     t0 = PerfNow()
     For Each candidate In ActiveDocument.Content.Fields
         If candidate.Type = wdFieldAddin Then
@@ -1039,7 +1170,16 @@ Private Sub RunBibliographyScale(ByVal itemCount As Long)
             If FieldIsBibliographyEntry(readData) Then bibliographyFields.Add candidate
         End If
     Next candidate
-    OutScale "bibliography collect", itemCount, "delete", PerfElapsed(t0)
+    OutScale "bibliography collect (legacy read+parse)", itemCount, "delete", PerfElapsed(t0)
+
+    ' Contract shape: classify by the field code, never touching Field.Data.
+    Dim codeFields As Collection
+    Set codeFields = New Collection
+    t0 = PerfNow()
+    For Each candidate In ActiveDocument.Content.Fields
+        If FieldHasCodeKind(candidate, FIELD_KIND_BIBLIOGRAPHY) Then codeFields.Add candidate
+    Next candidate
+    OutScale "bibliography collect (code kind)", itemCount, "delete", PerfElapsed(t0)
 
     Dim deleteElapsed As Double
     t0 = PerfNow()
@@ -1056,6 +1196,127 @@ Private Sub RunBibliographyScale(ByVal itemCount As Long)
     deleteElapsed = PerfElapsed(t0)
     OutScale "bibliography delete", itemCount, "delete", deleteElapsed
     ResetPerfDocument
+End Sub
+
+
+' --- Bibliography refresh (local, end to end) ------------------------------
+'
+' Runs the real bibliography refresh path: no-op, half the lines deleted, and
+' every retained line updated.
+
+Private Sub BibliographyRefreshOps(ByVal sizes As Collection)
+    Out "[SECTION] bibliography refresh (local id diff + retained update)"
+    Out "[INFO] RefreshBibliographyLinesInRange on a prepared block: no-op and half the lines deleted"
+
+    Dim item As Variant
+    For Each item In sizes
+        RunBibliographyRefreshScale CLng(item)
+    Next item
+    Out ""
+End Sub
+
+Private Sub RunBibliographyRefreshScale(ByVal lineCount As Long)
+    Dim pref As Object
+    Set pref = PerfBibliographyPreference()
+
+    Dim lines As Collection
+    Set lines = New Collection
+    Dim i As Long
+    For i = 1 To lineCount
+        lines.Add PerfBibliographyLine(i)
+    Next i
+
+    ResetPerfDocument
+    InsertPerfBibliographyBlock lines, pref
+
+    Dim target As Range
+    Set target = ActiveDocument.Content
+    Dim t0 As Double
+    t0 = PerfNow()
+    RefreshBibliographyLinesInRange target, lines, pref
+    OutScale "refresh no-op", lineCount, "identical", PerfElapsed(t0)
+
+    Dim fewer As Collection
+    Set fewer = New Collection
+    For i = 1 To lineCount
+        If i Mod 2 = 1 Then fewer.Add lines(i)
+    Next i
+    t0 = PerfNow()
+    RefreshBibliographyLinesInRange target, fewer, pref
+    OutScale "refresh with deletions", lineCount, "keepHalf", PerfElapsed(t0)
+
+    ' Updates: every line survives the id diff but comes back with new content.
+    ResetPerfDocument
+    InsertPerfBibliographyBlock lines, pref
+    Dim updatedLines As Collection
+    Set updatedLines = New Collection
+    For i = 1 To lineCount
+        updatedLines.Add PerfBibliographyUpdatedLine(i)
+    Next i
+    t0 = PerfNow()
+    RefreshBibliographyLinesInRange target, updatedLines, pref
+    OutScale "refresh with updates", lineCount, "newContent", PerfElapsed(t0)
+
+    ResetPerfDocument
+End Sub
+
+Private Function PerfBibliographyPreference() As Object
+    Dim pref As Object
+    Set pref = New Dictionary
+    pref("bibliographyTitleStyle") = PerfParagraphStyle("Banyan Perf Bibliography Title")
+    pref("bibliographyEntryStyle") = PerfParagraphStyle("Banyan Perf Bibliography Entry")
+    Set PerfBibliographyPreference = pref
+End Function
+
+Private Function PerfParagraphStyle(ByVal styleName As String) As String
+    On Error Resume Next
+    Dim existing As Style
+    Set existing = ActiveDocument.Styles(styleName)
+    On Error GoTo 0
+    If existing Is Nothing Then ActiveDocument.Styles.Add Name:=styleName, Type:=wdStyleTypeParagraph
+    PerfParagraphStyle = styleName
+End Function
+
+Private Function PerfBibliographyLine(ByVal itemNumber As Long) As Object
+    Dim data As Object
+    Set data = New Dictionary
+    data("id") = "perf-bib-" & CStr(itemNumber)
+    data("type") = "bibliography-entry"
+    Set data("content") = FieldCreateRichText("Entry " & CStr(itemNumber))
+    Set PerfBibliographyLine = data
+End Function
+
+Private Function PerfBibliographyUpdatedLine(ByVal itemNumber As Long) As Object
+    Dim data As Object
+    Set data = New Dictionary
+    data("id") = "perf-bib-" & CStr(itemNumber)
+    data("type") = "bibliography-entry"
+    data("revision") = 2
+    Set data("content") = FieldCreateRichText("Entry " & CStr(itemNumber) & " updated")
+    Set PerfBibliographyUpdatedLine = data
+End Function
+
+Private Sub InsertPerfBibliographyBlock(ByVal lines As Collection, ByVal pref As Object)
+    Dim cursor As Range
+    Set cursor = DocEnd()
+
+    Dim i As Long
+    For i = 1 To lines.Count
+        Dim data As Object
+        Dim fld As Field
+        Set data = lines(i)
+        Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & CStr(data("id")))
+        FieldWriteData fld, data
+        FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyEntryStyle"), _
+                                         wdStyleTypeParagraph, data("content")
+        FieldAddBookmarkToField fld, FieldGetBibliographyBookmarkName(CStr(data("id")))
+        Set cursor = fld.Result.Duplicate
+        cursor.Collapse wdCollapseEnd
+        If i < lines.Count Then
+            cursor.InsertParagraphAfter
+            cursor.Collapse wdCollapseEnd
+        End If
+    Next i
 End Sub
 
 

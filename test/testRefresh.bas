@@ -17,6 +17,8 @@ Public Function RunTests() As String
     report = report & TestResult("bibliography LCS preserves multiple segments", TestBibliographyMultipleSegments()) & vbCrLf
     m_failure = ""
     report = report & TestResult("bibliography rejects missing ids", TestBibliographyRejectsMissingIds()) & vbCrLf
+    m_failure = ""
+    report = report & TestResult("bibliography leaves empty-data field alone", TestBibliographyEmptyData()) & vbCrLf
     RunTests = report
 End Function
 
@@ -339,20 +341,57 @@ Private Sub InsertTestBibliography(ByVal lines As Collection, ByVal pref As Obje
     Next i
 End Sub
 
+Private Function TestFieldId(ByVal fld As Field) As String
+    Dim data As Object
+    Set data = FieldReadData(fld)
+    If Not data Is Nothing Then TestFieldId = DictKeyString(data, "id")
+End Function
+
 Private Function TestBibliographyFields(ByVal startPos As Long) As Collection
     Dim result As Collection
     Set result = New Collection
     Dim fld As Field
     For Each fld In ActiveDocument.Range(startPos, ActiveDocument.Content.End).Fields
-        If FieldCodeHasPrefix(fld, "BANYAN_BIBLIOGRAPHY") Then result.Add fld
+        If FieldHasCodeKind(fld, FIELD_KIND_BIBLIOGRAPHY) Then result.Add fld
     Next fld
     Set TestBibliographyFields = result
 End Function
 
-Private Function TestFieldId(ByVal fld As Field) As String
-    Dim data As Object
-    Set data = FieldReadData(fld)
-    If Not data Is Nothing Then TestFieldId = DictKeyString(data, "id")
+' A field without stored data must be left untouched by the refresh.
+Private Function TestBibliographyEmptyData() As Boolean
+    On Error GoTo ErrHandler
+    Dim startPos As Long
+    startPos = BeginTestArea()
+
+    Dim pref As Object
+    Set pref = TestBibliographyPreference()
+
+    Dim cursor As Range
+    Set cursor = ActiveDocument.Content.Duplicate
+    cursor.Collapse wdCollapseEnd
+    Dim fld As Field
+    Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY empty-data")
+    If fld Is Nothing Then GoTo Finish
+
+    Dim updated As Collection
+    Set updated = New Collection
+    updated.Add TestBibliographyLine("empty-data", "bibliography-entry", "Entry")
+
+    Dim target As Range
+    Set target = ActiveDocument.Range(startPos, ActiveDocument.Content.End)
+    Dim ok As Boolean
+    ok = Not RefreshBibliographyLinesInRange(target, updated, pref)
+    ok = ok And (Len(FieldDataText(fld)) = 0)
+
+Finish:
+    EndTestArea startPos
+    TestBibliographyEmptyData = ok
+    Exit Function
+
+ErrHandler:
+    m_failure = "empty-data error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    EndTestArea startPos
+    TestBibliographyEmptyData = False
 End Function
 
 Private Function TestBibliographyLine(ByVal id As String, _

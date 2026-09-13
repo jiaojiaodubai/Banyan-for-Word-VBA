@@ -348,18 +348,17 @@ Private Function GetFinalizeAction(ByVal fld As Field) As String
     On Error GoTo ErrHandler
     If fld.Type <> wdFieldAddin Then Exit Function
 
-    Dim data As Object
-    Set data = FieldReadData(fld)
-    If data Is Nothing Then Exit Function
+    ' Classify by code: no Field.Data access.
+    Dim kind As String
+    Dim id As String
+    If Not FieldParseCode(fld.Code.Text, kind, id) Then Exit Function
 
-    If FieldIsIntextCitation(data) Or _
-       FieldIsNoteCitation(data) Or _
-       FieldIsBibliographyTitle(data) Or _
-       FieldIsBibliographyEntry(data) Then
-        GetFinalizeAction = "unlink"
-    ElseIf IsChapterBreak(data) Then
-        GetFinalizeAction = "delete"
-    End If
+    Select Case kind
+        Case FIELD_KIND_CITATION, FIELD_KIND_BIBLIOGRAPHY
+            GetFinalizeAction = "unlink"
+        Case FIELD_KIND_CHAPTER
+            GetFinalizeAction = "delete"
+    End Select
     Exit Function
 
 ErrHandler:
