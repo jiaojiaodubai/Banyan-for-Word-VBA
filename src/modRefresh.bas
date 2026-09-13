@@ -474,7 +474,8 @@ End Function
 ' --- Citation data application ---
 
 ' Persist response data on an in-text citation field; render only when the rich
-' text changed. currentData is the local data cached by the request phase.
+' text changed. currentData is the local data cached by the request phase and is
+' used for the comparison only - the response object is what gets stored.
 Private Function ApplyIntextCitationData(ByVal targetField As Field, _
                                          ByVal updatedData As Object, _
                                          ByVal citationId As String, _
@@ -490,16 +491,13 @@ Private Function ApplyIntextCitationData(ByVal targetField As Field, _
             DictKeyObject(currentData, "content"), DictKeyObject(updatedData, "content"))
     End If
 
-    Dim writeData As Object
-    Set writeData = MergeCitationData(currentData, updatedData)
-
-    If Not FieldWriteData(targetField, writeData) Then
+    If Not FieldWriteData(targetField, updatedData) Then
         RefreshLogWarn "Failed to write updated data for citation with id " & citationId & ", skipping render."
         Exit Function
     End If
 
     If contentChanged Then
-        FieldRenderStyledFieldWithData targetField, writeData, DictKeyObject(writeData, "content")
+        FieldRenderStyledFieldWithData targetField, updatedData, DictKeyObject(updatedData, "content")
     End If
     ApplyIntextCitationData = True
     Exit Function
@@ -511,7 +509,8 @@ End Function
 
 ' Persist response data on a note citation field. The reference decides first:
 ' a change replaces the field (and the footnote), otherwise only the data is
-' written. currentData is the local data cached by the request phase.
+' written. currentData is the local data cached by the request phase and is used
+' for the comparison only - the response object is what gets stored.
 Private Function ApplyNoteCitationData(ByVal targetNote As Footnote, _
                                        ByVal targetField As Field, _
                                        ByVal updatedData As Object, _
@@ -533,19 +532,16 @@ Private Function ApplyNoteCitationData(ByVal targetNote As Footnote, _
         End If
     End If
 
-    Dim writeData As Object
-    Set writeData = MergeCitationData(currentData, updatedData)
-
     If presentationChanged Then
         ' Content changes require a clean field replacement; reference changes
         ' additionally require footnote recreation.
         Dim rebuilt As Collection
-        Set rebuilt = FieldRebuildNoteCitationAtRange(targetNote, targetField, writeData)
+        Set rebuilt = FieldRebuildNoteCitationAtRange(targetNote, targetField, updatedData)
         If rebuilt Is Nothing Then
             RefreshLogWarn "Failed to rebuild note citation with id " & citationId & ", skipping."
             Exit Function
         End If
-    ElseIf Not FieldWriteData(targetField, writeData) Then
+    ElseIf Not FieldWriteData(targetField, updatedData) Then
         ' A source-only change is persisted without touching the field result
         ' or the footnote structure.
         RefreshLogWarn "Failed to write updated data for note citation with id " & citationId & "."
@@ -558,25 +554,6 @@ Private Function ApplyNoteCitationData(ByVal targetNote As Footnote, _
 ErrHandler:
     DiagnosticsReraiseIfDev "modRefresh.ApplyNoteCitationData"
     ApplyNoteCitationData = False
-End Function
-
-' The response wins, local-only keys are kept; when the local data adds nothing
-' the response object itself is used so the stored text keeps matching it.
-Private Function MergeCitationData(ByVal currentData As Object, ByVal updatedData As Object) As Object
-    If currentData Is Nothing Then
-        Set MergeCitationData = updatedData
-        Exit Function
-    End If
-
-    If currentData.Count <= updatedData.Count Then
-        Set MergeCitationData = updatedData
-        Exit Function
-    End If
-
-    currentData("source") = updatedData("source")
-    If DictHasKey(updatedData, "content") Then Set currentData("content") = DictKeyObject(updatedData, "content")
-    If DictHasKey(updatedData, "reference") Then Set currentData("reference") = DictKeyObject(updatedData, "reference")
-    Set MergeCitationData = currentData
 End Function
 
 
