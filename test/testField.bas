@@ -1,5 +1,7 @@
 Option Explicit
 
+Private m_failure As String
+
 ' ============================================================================
 ' Module  : testField
 ' Purpose : Tests for modField against the active document.
@@ -20,6 +22,7 @@ Option Explicit
 Public Function RunTests() As String
     Dim report As String
     report = "testField" & vbCrLf & String(40, "-") & vbCrLf
+    m_failure = ""
     If ActiveDocument Is Nothing Then
         RunTests = report & "[FAIL] no active document"
         Exit Function
@@ -35,6 +38,8 @@ Public Function RunTests() As String
     report = report & TestResult("migrate intext -> note", TestFieldMigrateIntextToNotes()) & vbCrLf
     report = report & TestResult("migrate note -> intext", TestFieldMigrateNotesToIntext()) & vbCrLf
     report = report & TestResult("collectors in range", TestFieldCollectors()) & vbCrLf
+    report = report & TestResult("collectors re-key duplicated ids", TestFieldDuplicateCitationIds()) & vbCrLf
+    report = report & TestResult("broken citation fields are deleted", TestFieldBrokenCitationFields()) & vbCrLf
     report = report & TestResult("field code contract", TestFieldCodeContract()) & vbCrLf
     report = report & TestResult("data text read (lazy parsing)", TestFieldDataTextRead()) & vbCrLf
     report = report & TestResult("validators", TestFieldValidators()) & vbCrLf
@@ -1006,6 +1011,225 @@ ErrHandler:
     TestFieldCollectors = False
 End Function
 
+' A pasted citation arrives with a duplicated id (Word reports no paste); the
+' collector re-keys the field code as it parses it and reports the new id, while
+' the stored data keeps the pasted id until the refresh writes the response.
+Private Function TestFieldDuplicateCitationIds() As Boolean
+    On Error GoTo ErrHandler
+    If ActiveDocument Is Nothing Then Exit Function
+
+    Dim doc As Document
+    Set doc = ActiveDocument
+    Dim startPos As Long
+    startPos = doc.Content.End
+    Dim rng As Range
+    Set rng = TestDocEndRange(doc)
+    rng.Text = "Dup "
+
+    Dim data As Object
+    Set data = FieldCreatePlaceholderIntextCitationData("dup-intext")
+    Dim first As Field
+    Dim copy As Field
+    Set first = FieldCreateIntextCitationAtRange(TestDocEndRange(doc), data)
+    Set copy = FieldCreateIntextCitationAtRange(TestDocEndRange(doc), data)
+    If first Is Nothing Or copy Is Nothing Then
+        m_failure = "in-text field creation failed"
+        GoTo CleanUp
+    End If
+
+    Dim noteData As Object
+    Set noteData = FieldCreatePlaceholderNoteCitationData("dup-note")
+    Dim created As Collection
+    Dim noteCopy As Collection
+    Set created = FieldCreateNoteCitationAtRange(TestDocEndRange(doc), noteData)
+    Set noteCopy = FieldCreateNoteCitationAtRange(TestDocEndRange(doc), noteData)
+    If created Is Nothing Or noteCopy Is Nothing Then
+        m_failure = "note field creation failed"
+        GoTo CleanUp
+    End If
+
+    Dim targetRange As Range
+    Set targetRange = doc.Range(startPos, doc.Content.End)
+
+    Dim ok As Boolean
+    Dim intextCol As Collection
+    Set intextCol = FieldCollectIntextCitationFieldsInRange(targetRange)
+    ok = (intextCol.Count = 2)
+    If Not ok Then m_failure = "intext count=" & CStr(intextCol.Count)
+    Dim keptId As String
+    Dim newId As String
+    If intextCol.Count = 2 Then
+        Dim copyField As Field
+        Dim copyData As Object
+        Dim copyText As String
+        keptId = CStr(intextCol(1)("id"))
+        newId = CStr(intextCol(2)("id"))
+        Set copyField = intextCol(2)("field")
+        copyText = FieldDataText(copyField)
+        Set copyData = FieldReadData(copyField)
+
+        If keptId <> "dup-intext" Then m_failure = "kept id=" & keptId
+        If Len(newId) <> 36 Then m_failure = "new id=" & newId
+        If newId = keptId Then m_failure = "copy was not re-keyed"
+        If Not FieldHasCodeKind(copyField, FIELD_KIND_CITATION) Then m_failure = "code kind lost"
+        If TestFieldCodeId(copyField) <> newId Then m_failure = "code does not carry the new id"
+
+        ok = ok And (keptId = "dup-intext")
+        ok = ok And (Len(newId) = 36)
+        ok = ok And (newId <> keptId)
+        ok = ok And FieldHasCodeKind(copyField, FIELD_KIND_CITATION)
+        ' The code carries the new id; the pasted payload stays untouched.
+        ok = ok And (TestFieldCodeId(copyField) = newId)
+
+        ' The re-key touches the code only: the pasted payload must survive.
+        If copyData Is Nothing Then
+            m_failure = "copy data unreadable, text len=" & CStr(Len(copyText))
+            ok = False
+        Else
+            If CStr(copyData("id")) <> keptId Then m_failure = "data id now=" & CStr(copyData("id"))
+            ok = ok And (CStr(copyData("id")) = keptId)
+        End If
+        If Len(copyText) = 0 Or InStr(copyText, keptId) = 0 Then
+            m_failure = "stored text lost: len=" & CStr(Len(copyText))
+            ok = False
+        End If
+    End If
+
+    ' The next collection is stable: a re-keyed code is not touched again.
+    Set intextCol = FieldCollectIntextCitationFieldsInRange(targetRange)
+    ok = ok And (intextCol.Count = 2)
+    If intextCol.Count <> 2 Then m_failure = "second pass count=" & CStr(intextCol.Count)
+    If intextCol.Count = 2 Then
+        If CStr(intextCol(1)("id")) <> "dup-intext" Or CStr(intextCol(2)("id")) <> newId Then _
+            m_failure = "unstable second pass=" & CStr(intextCol(1)("id")) & "," & CStr(intextCol(2)("id"))
+        ok = ok And (CStr(intextCol(1)("id")) = "dup-intext")
+        ok = ok And (CStr(intextCol(2)("id")) = newId)
+    End If
+
+    Dim noteCol As Collection
+    Set noteCol = FieldCollectNoteCitationFootnotesInRange(targetRange)
+    ok = ok And (noteCol.Count = 2)
+    If noteCol.Count <> 2 Then m_failure = "note count=" & CStr(noteCol.Count)
+    If noteCol.Count = 2 Then
+        If CStr(noteCol(1)("id")) <> "dup-note" Then m_failure = "note kept id=" & CStr(noteCol(1)("id"))
+        If Len(CStr(noteCol(2)("id"))) <> 36 Or CStr(noteCol(2)("id")) = "dup-note" Then _
+            m_failure = "note copy id=" & CStr(noteCol(2)("id"))
+        ok = ok And (CStr(noteCol(1)("id")) = "dup-note")
+        ok = ok And (Len(CStr(noteCol(2)("id"))) = 36)
+        ok = ok And (CStr(noteCol(2)("id")) <> "dup-note")
+    End If
+
+CleanUp:
+    FieldRemoveFieldSafely first
+    FieldRemoveFieldSafely copy
+    If Not created Is Nothing Then FieldRemoveFootnoteSafely created("note")
+    If Not noteCopy Is Nothing Then FieldRemoveFootnoteSafely noteCopy("note")
+    On Error Resume Next
+    doc.Range(startPos, doc.Content.End).Delete
+    On Error GoTo 0
+    TestFieldDuplicateCitationIds = ok
+    Exit Function
+
+ErrHandler:
+    m_failure = "error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    TestFieldDuplicateCitationIds = False
+End Function
+
+' A typed code without an id is not a citation: the collectors delete the broken
+' field, and a broken note citation takes its whole footnote with it.
+Private Function TestFieldBrokenCitationFields() As Boolean
+    On Error GoTo ErrHandler
+    If ActiveDocument Is Nothing Then Exit Function
+
+    Dim doc As Document
+    Set doc = ActiveDocument
+    Dim startPos As Long
+    startPos = doc.Content.End
+    Dim rng As Range
+    Set rng = TestDocEndRange(doc)
+    rng.Text = "Broken "
+
+    Dim data As Object
+    Set data = FieldCreatePlaceholderIntextCitationData("broken-valid")
+    Dim valid As Field
+    Set valid = FieldCreateIntextCitationAtRange(TestDocEndRange(doc), data)
+    Dim broken As Field
+    Set broken = FieldCreateRawAddinField(TestDocEndRange(doc), FieldCitationCode(""))
+    If valid Is Nothing Or broken Is Nothing Then
+        m_failure = "in-text field creation failed"
+        GoTo CleanUp
+    End If
+
+    Dim noteData As Object
+    Set noteData = FieldCreatePlaceholderNoteCitationData("broken-valid-note")
+    Dim validNote As Collection
+    Set validNote = FieldCreateNoteCitationAtRange(TestDocEndRange(doc), noteData)
+    If validNote Is Nothing Then
+        m_failure = "note creation failed"
+        GoTo CleanUp
+    End If
+
+    Dim brokenNote As Footnote
+    Set brokenNote = doc.Footnotes.Add(Range:=TestDocEndRange(doc))
+    If brokenNote Is Nothing Then
+        m_failure = "broken footnote creation failed"
+        GoTo CleanUp
+    End If
+    Dim noteRange As Range
+    Set noteRange = brokenNote.Range.Duplicate
+    noteRange.Collapse wdCollapseStart
+    Dim brokenNoteField As Field
+    Set brokenNoteField = FieldCreateRawAddinField(noteRange, FieldCitationCode(""))
+    If brokenNoteField Is Nothing Then
+        m_failure = "broken note field creation failed"
+        GoTo CleanUp
+    End If
+    Dim notesBefore As Long
+    notesBefore = doc.Footnotes.Count
+
+    Dim targetRange As Range
+    Set targetRange = doc.Range(startPos, doc.Content.End)
+
+    Dim ok As Boolean
+    Dim intextCol As Collection
+    Set intextCol = FieldCollectIntextCitationFieldsInRange(targetRange)
+    ok = (intextCol.Count = 1)
+    If intextCol.Count <> 1 Then m_failure = "in-text count=" & CStr(intextCol.Count)
+    If intextCol.Count = 1 Then ok = ok And (CStr(intextCol(1)("id")) = "broken-valid")
+
+    Dim noteCol As Collection
+    Set targetRange = doc.Range(startPos, doc.Content.End)
+    Set noteCol = FieldCollectNoteCitationFootnotesInRange(targetRange)
+    ok = ok And (noteCol.Count = 1)
+    If noteCol.Count <> 1 Then m_failure = "note count=" & CStr(noteCol.Count)
+    If noteCol.Count = 1 Then ok = ok And (CStr(noteCol(1)("id")) = "broken-valid-note")
+
+    ' The broken field is gone from the body, the broken footnote as a whole.
+    Set targetRange = doc.Range(startPos, doc.Content.End)
+    Dim remaining As Long
+    Dim fld As Field
+    For Each fld In targetRange.Fields
+        If FieldHasCodeKind(fld, FIELD_KIND_CITATION) Then remaining = remaining + 1
+    Next fld
+    ok = ok And (remaining = 1)
+    If remaining <> 1 Then m_failure = "citation fields left=" & CStr(remaining)
+    ok = ok And (doc.Footnotes.Count = notesBefore - 1)
+    If doc.Footnotes.Count <> notesBefore - 1 Then m_failure = "footnote count=" & CStr(doc.Footnotes.Count)
+
+CleanUp:
+    FieldRemoveFieldSafely valid
+    If Not validNote Is Nothing Then FieldRemoveFootnoteSafely validNote("note")
+    On Error Resume Next
+    doc.Range(startPos, doc.Content.End).Delete
+    On Error GoTo 0
+    TestFieldBrokenCitationFields = ok
+    Exit Function
+
+ErrHandler:
+    m_failure = "error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    TestFieldBrokenCitationFields = False
+End Function
+
 ' The field code carries the field type and the data id.
 Private Function TestFieldCodeContract() As Boolean
     On Error GoTo ErrHandler
@@ -1297,10 +1521,17 @@ Private Function TestDocEndRange(ByVal doc As Document) As Range
     TestDocEndRange.Collapse wdCollapseEnd
 End Function
 
+Private Function TestFieldCodeId(ByVal fld As Field) As String
+    Dim kind As String
+    Dim id As String
+    If FieldParseCode(fld.Code.Text, kind, id) Then TestFieldCodeId = id
+End Function
+
 Private Function TestResult(ByVal name As String, ByVal passed As Boolean) As String
     If passed Then
         TestResult = "[PASS] " & name
     Else
-        TestResult = "[FAIL] " & name
+        TestResult = "[FAIL] " & name & IIf(Len(m_failure) > 0, ": " & m_failure, "")
     End If
+    m_failure = ""
 End Function

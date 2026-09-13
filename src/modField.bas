@@ -51,7 +51,8 @@ Private Const INTEXT_STYLE_EN As String = "Banyan Citation"
 '   BANYAN_BIBLIOGRAPHY <id>  bibliography title line or entry line
 '   <chapter prompt>          chapter break
 ' Every code carries the data id, pending placeholders included; a matching code
-' is trusted, so collecting never parses Field.Data.
+' is trusted, so collecting never parses Field.Data. A typed code WITHOUT an id
+' is a broken field and the collectors drop it.
 ' Keep these declarations above the first procedure: the VBE does not register a
 ' module-level Const declared below one.
 Private Const FIELD_CODE_CITATION As String = "BANYAN_CITATION"
@@ -141,7 +142,8 @@ Public Function FieldBibliographyCode(ByVal id As String) As String
 End Function
 
 ' Parse a field code into its kind and data id; False when it is not a Banyan
-' field. A code written before the contract can have an empty id.
+' field. A typed code without an id parses with an empty id, which the collectors
+' treat as broken.
 Public Function FieldParseCode(ByVal codeText As String, _
                                ByRef outKind As String, _
                                ByRef outId As String) As Boolean
@@ -858,21 +860,112 @@ End Function
 
 ' --- Collectors ---
 
+' Ids are unique per document, but Word reports no paste: a copied citation
+' arrives with a duplicated id and the refresh would match two fields to one
+' response. Re-key the copy here, where its code is parsed. The stored data is
+' deliberately left alone: the request is built from the new id, so the response
+' data differs from the stored text and replaces it at the next write.
+Private Function FieldUniqueCitationId(ByVal fld As Field, ByVal id As String, ByVal seenIds As Object) As String
+    If Not seenIds.Exists(id) Then
+        seenIds(id) = True
+        FieldUniqueCitationId = id
+        Exit Function
+    End If
+
+    Dim candidate As String
+    Do
+        candidate = FieldCreateId()
+    Loop While seenIds.Exists(candidate)
+
+    If Not FieldWriteCitationCodeId(fld, candidate) Then
+        ' The code could not be rewritten, so it still spells the identity.
+        FieldUniqueCitationId = id
+        Exit Function
+    End If
+
+    seenIds(candidate) = True
+    FieldUniqueCitationId = candidate
+End Function
+
+' Swap the id inside an existing citation code, keeping the " ADDIN ... " shape
+' FieldCreateRawAddinField writes. Word drops Field.Data when an ADDIN code is
+' rewritten, so the stored payload is read as text before the swap and put back
+' after it (a string copy, only for a re-keyed copy).
+Private Function FieldWriteCitationCodeId(ByVal fld As Field, ByVal id As String) As Boolean
+    On Error GoTo ErrHandler
+    If fld Is Nothing Then Exit Function
+
+    Dim storedText As String
+    storedText = FieldDataText(fld)
+
+    fld.Code.Text = " ADDIN " & FieldCitationCode(id) & " "
+    If Len(storedText) > 0 Then fld.Data = storedText
+    FieldWriteCitationCodeId = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldWriteCitationCodeId"
+    FieldWriteCitationCodeId = False
+End Function
+
+' Delete a typed field whose code carries no id. Without an id it cannot be
+' matched to a response, so it is broken rather than a citation.
+Private Sub FieldDeleteBrokenFields(ByVal fields As Collection)
+    On Error GoTo ErrHandler
+
+    Dim i As Long
+    For i = fields.Count To 1 Step -1
+        FieldRemoveFieldSafely fields(i)
+    Next i
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldDeleteBrokenFields"
+End Sub
+
+' Note citations leave with their whole footnote, not just the field.
+Private Sub FieldDeleteBrokenNotes(ByVal notes As Collection)
+    On Error GoTo ErrHandler
+
+    Dim i As Long
+    For i = notes.Count To 1 Step -1
+        FieldRemoveFootnoteSafely notes(i)
+    Next i
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldDeleteBrokenNotes"
+End Sub
+
 Public Function FieldCollectIntextCitationFieldsInRange(ByVal targetRange As Range) As Collection
     Dim result As Collection
     Set result = New Collection
 
     ' Code-only classification: no Field.Data access.
+    Dim seenIds As Object
+    Set seenIds = New Dictionary
+    Dim broken As Collection
+
     Dim fld As Field
     Dim kind As String
     Dim id As String
     For Each fld In targetRange.Fields
         If fld.Type = wdFieldAddin Then
             If FieldParseCode(fld.Code.Text, kind, id) Then
-                If kind = FIELD_KIND_CITATION Then result.Add MakeFieldAndId(fld, id)
+                If kind = FIELD_KIND_CITATION Then
+                    If Len(id) = 0 Then
+                        If broken Is Nothing Then Set broken = New Collection
+                        broken.Add fld
+                    Else
+                        result.Add MakeFieldAndId(fld, FieldUniqueCitationId(fld, id, seenIds))
+                    End If
+                End If
             End If
         End If
     Next fld
+
+    ' Deleting while the field collection is being walked would be unsafe.
+    If Not broken Is Nothing Then FieldDeleteBrokenFields broken
 
     Set FieldCollectIntextCitationFieldsInRange = result
 End Function
@@ -880,6 +973,10 @@ End Function
 Public Function FieldCollectNoteCitationFootnotesInRange(ByVal targetRange As Range) As Collection
     Dim result As Collection
     Set result = New Collection
+
+    Dim seenIds As Object
+    Set seenIds = New Dictionary
+    Dim broken As Collection
 
     Dim note As Footnote
     Dim fld As Field
@@ -891,12 +988,21 @@ Public Function FieldCollectNoteCitationFootnotesInRange(ByVal targetRange As Ra
             If Not fld Is Nothing Then
                 If fld.Type = wdFieldAddin Then
                     If FieldParseCode(fld.Code.Text, kind, id) Then
-                        If kind = FIELD_KIND_CITATION Then result.Add MakeNoteFieldAndId(note, fld, id)
+                        If kind = FIELD_KIND_CITATION Then
+                            If Len(id) = 0 Then
+                                If broken Is Nothing Then Set broken = New Collection
+                                broken.Add note
+                            Else
+                                result.Add MakeNoteFieldAndId(note, fld, FieldUniqueCitationId(fld, id, seenIds))
+                            End If
+                        End If
                     End If
                 End If
             End If
         End If
     Next note
+
+    If Not broken Is Nothing Then FieldDeleteBrokenNotes broken
 
     Set FieldCollectNoteCitationFootnotesInRange = result
 End Function

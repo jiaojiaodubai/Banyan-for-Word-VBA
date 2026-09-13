@@ -489,7 +489,7 @@ Private Sub AddIntextContexts(ByVal targetRange As Range, ByVal byId As Object)
         Set data = FieldReadData(fd("field"))
         If Not data Is Nothing Then
             Dim context As Object
-            Set context = BuildCitationContext(fd("field"), data)
+            Set context = BuildCitationContext(fd("field"), data, CStr(fd("id")))
             AddContextById byId, context
         End If
     Next fd
@@ -508,7 +508,7 @@ Private Sub AddNoteContexts(ByVal targetRange As Range, ByVal byId As Object)
         Set data = FieldReadData(fd("field"))
         If Not data Is Nothing Then
             Dim context As Object
-            Set context = BuildCitationContext(fd("field"), data)
+            Set context = BuildCitationContext(fd("field"), data, CStr(fd("id")))
             AddContextById byId, context
         End If
     Next fd
@@ -530,7 +530,9 @@ Private Sub AddContextById(ByVal byId As Object, ByVal context As Object)
     byId.Add contextId, context
 End Sub
 
-Private Function BuildCitationContext(ByVal fld As Field, ByVal data As Object) As Object
+Private Function BuildCitationContext(ByVal fld As Field, _
+                                      ByVal data As Object, _
+                                      ByVal id As String) As Object
     On Error GoTo ErrHandler
 
     Dim context As Object
@@ -547,7 +549,8 @@ Private Function BuildCitationContext(ByVal fld As Field, ByVal data As Object) 
         DictCopyKey context, CStr(key), source, CStr(key)
     Next key
 
-    context("id") = DictKeyString(data, "id")
+    ' The identity is what the collection resolved from the code.
+    context("id") = id
     context("page") = FieldPageNumber(fld)
     Set BuildCitationContext = context
     Exit Function

@@ -16,9 +16,11 @@ Public Function RunTests() As String
     m_failure = ""
     report = report & TestResult("bibliography LCS preserves multiple segments", TestBibliographyMultipleSegments()) & vbCrLf
     m_failure = ""
-    report = report & TestResult("bibliography rejects missing ids", TestBibliographyRejectsMissingIds()) & vbCrLf
+    report = report & TestResult("bibliography drops line without id", TestBibliographyBrokenLineDropped()) & vbCrLf
     m_failure = ""
     report = report & TestResult("bibliography leaves empty-data field alone", TestBibliographyEmptyData()) & vbCrLf
+    m_failure = ""
+    report = report & TestResult("bibliography duplicate id line is dropped", TestBibliographyDuplicateLineDropped()) & vbCrLf
     m_failure = ""
     report = report & TestResult("style-name change does not refresh", TestNonCitationStyleKeysDoNotRefresh()) & vbCrLf
     m_failure = ""
@@ -274,48 +276,70 @@ ErrHandler:
     TestBibliographyLocalInsert = False
 End Function
 
-Private Function TestBibliographyRejectsMissingIds() As Boolean
+' A bibliography line whose code lost its id is broken, not a line: the
+' collection deletes it with its paragraph mark and the refresh carries on with
+' the lines that are left. Only the code decides - the data id is not consulted.
+Private Function TestBibliographyBrokenLineDropped() As Boolean
     On Error GoTo ErrHandler
     Dim startPos As Long
     startPos = BeginTestArea()
 
     Dim pref As Object
     Set pref = TestBibliographyPreference()
-    Dim missingIdLine As Object
-    Set missingIdLine = TestBibliographyLine("missing", "bibliography-title", "Old title")
-    missingIdLine.Remove "id"
+
+    ' Test-only code override: typed code without an id, data with one.
+    Dim brokenLine As Object
+    Set brokenLine = TestBibliographyLine("broken", "bibliography-entry", "Broken entry")
+    brokenLine("testCode") = "BANYAN_BIBLIOGRAPHY"
+
     Dim initial As Collection
     Set initial = New Collection
-    initial.Add missingIdLine
+    initial.Add TestBibliographyLine("title", "bibliography-title", "References")
+    initial.Add TestBibliographyLine("A", "bibliography-entry", "Entry A")
+    initial.Add brokenLine
+    initial.Add TestBibliographyLine("B", "bibliography-entry", "Entry B")
     InsertTestBibliography initial, pref
 
     Dim updated As Collection
     Set updated = New Collection
-    updated.Add TestBibliographyLine("title-new", "bibliography-title", "New title")
+    updated.Add TestBibliographyLine("title", "bibliography-title", "References")
+    updated.Add TestBibliographyLine("A", "bibliography-entry", "Entry A")
+    updated.Add TestBibliographyLine("B", "bibliography-entry", "Entry B updated")
 
     Dim target As Range
     Set target = ActiveDocument.Range(startPos, ActiveDocument.Content.End)
     Dim ok As Boolean
-    ok = Not RefreshBibliographyLinesInRange(target, updated, pref)
-    If Not ok Then m_failure = "missing id was accepted"
+    ok = RefreshBibliographyLinesInRange(target, updated, pref)
+
     Dim fields As Collection
     Set fields = TestBibliographyFields(startPos)
-    If fields.Count <> 1 Then m_failure = "field count changed=" & CStr(fields.Count)
-    ok = ok And (fields.Count = 1)
-    If fields.Count = 1 Then
-        ok = ok And (fields(1).Result.Text = "Old title")
-        If fields(1).Result.Text <> "Old title" Then m_failure = "missing-id field was modified"
+    ok = ok And (fields.Count = 3)
+    If fields.Count <> 3 Then m_failure = "field count=" & CStr(fields.Count)
+    If fields.Count = 3 Then
+        Dim orderText As String
+        orderText = TestFieldId(fields(1)) & "," & TestFieldId(fields(2)) & "," & TestFieldId(fields(3))
+        ok = ok And (orderText = "title,A,B")
+        If orderText <> "title,A,B" Then m_failure = "order=" & orderText
+        ok = ok And (fields(3).Result.Text = "Entry B updated")
+        If fields(3).Result.Text <> "Entry B updated" Then m_failure = "B result=" & fields(3).Result.Text
+        ' The dropped line leaves no empty paragraph behind.
+        Dim areaText As String
+        areaText = ActiveDocument.Range(startPos, ActiveDocument.Content.End).Text
+        If InStr(areaText, vbCr & vbCr) > 0 Then
+            m_failure = "blank line left: " & Replace(areaText, vbCr, "|")
+            ok = False
+        End If
     End If
 
 Finish:
     EndTestArea startPos
-    TestBibliographyRejectsMissingIds = ok
+    TestBibliographyBrokenLineDropped = ok
     Exit Function
 
 ErrHandler:
-    m_failure = "missing-id error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    m_failure = "broken line error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
     EndTestArea startPos
-    TestBibliographyRejectsMissingIds = False
+    TestBibliographyBrokenLineDropped = False
 End Function
 
 Private Sub InsertTestBibliography(ByVal lines As Collection, ByVal pref As Object)
@@ -328,7 +352,12 @@ Private Sub InsertTestBibliography(ByVal lines As Collection, ByVal pref As Obje
         Dim data As Object
         Dim fld As Field
         Set data = lines(i)
-        Set fld = FieldCreateRawAddinField(cursor, "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id"))
+        ' The line code normally carries the id; a test can override it (the
+        ' "testCode" key) to write a broken line.
+        Dim fieldCode As String
+        fieldCode = "BANYAN_BIBLIOGRAPHY " & DictKeyString(data, "id")
+        If data.Exists("testCode") Then fieldCode = DictKeyString(data, "testCode")
+        Set fld = FieldCreateRawAddinField(cursor, fieldCode)
         FieldWriteData fld, data
         If FieldIsBibliographyTitle(data) Then
             FieldRenderStyledFieldWithStyle fld, DictKeyString(pref, "bibliographyTitleStyle"), wdStyleTypeParagraph, data("content")
@@ -396,6 +425,65 @@ ErrHandler:
     m_failure = "empty-data error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
     EndTestArea startPos
     TestBibliographyEmptyData = False
+End Function
+
+' A bibliography line is generated by the style, never edited by hand: a pasted
+' line duplicates an id, is dropped by the collection, and the refresh goes on
+' with the lines that are left.
+Private Function TestBibliographyDuplicateLineDropped() As Boolean
+    On Error GoTo ErrHandler
+    Dim startPos As Long
+    startPos = BeginTestArea()
+    Dim pref As Object
+    Set pref = TestBibliographyPreference()
+
+    Dim initial As Collection
+    Set initial = New Collection
+    initial.Add TestBibliographyLine("title", "bibliography-title", "References")
+    initial.Add TestBibliographyLine("A", "bibliography-entry", "Entry A")
+    initial.Add TestBibliographyLine("A", "bibliography-entry", "Entry A pasted")
+    initial.Add TestBibliographyLine("B", "bibliography-entry", "Entry B")
+    InsertTestBibliography initial, pref
+
+    Dim updated As Collection
+    Set updated = New Collection
+    updated.Add TestBibliographyLine("title", "bibliography-title", "References")
+    updated.Add TestBibliographyLine("A", "bibliography-entry", "Entry A")
+    updated.Add TestBibliographyLine("B", "bibliography-entry", "Entry B updated")
+
+    Dim target As Range
+    Set target = ActiveDocument.Range(startPos, ActiveDocument.Content.End)
+    Dim ok As Boolean
+    ok = RefreshBibliographyLinesInRange(target, updated, pref)
+
+    Dim fields As Collection
+    Set fields = TestBibliographyFields(startPos)
+    ok = ok And (fields.Count = 3)
+    If fields.Count <> 3 Then m_failure = "field count=" & CStr(fields.Count)
+    If fields.Count = 3 Then
+        Dim orderText As String
+        orderText = TestFieldId(fields(1)) & "," & TestFieldId(fields(2)) & "," & TestFieldId(fields(3))
+        ok = ok And (orderText = "title,A,B")
+        If orderText <> "title,A,B" Then m_failure = "order=" & orderText
+        ok = ok And (fields(3).Result.Text = "Entry B updated")
+        If fields(3).Result.Text <> "Entry B updated" Then m_failure = "B result=" & fields(3).Result.Text
+        ' The dropped line leaves no empty paragraph behind.
+        Dim areaText As String
+        areaText = ActiveDocument.Range(startPos, ActiveDocument.Content.End).Text
+        If InStr(areaText, vbCr & vbCr) > 0 Then
+            m_failure = "blank line left: " & Replace(areaText, vbCr, "|")
+            ok = False
+        End If
+    End If
+
+    EndTestArea startPos
+    TestBibliographyDuplicateLineDropped = ok
+    Exit Function
+
+ErrHandler:
+    m_failure = "duplicate line error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    EndTestArea startPos
+    TestBibliographyDuplicateLineDropped = False
 End Function
 
 Private Function TestCitationStyle() As Object
