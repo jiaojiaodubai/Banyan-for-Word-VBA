@@ -19,6 +19,10 @@ Public Function RunTests() As String
     report = report & TestResult("bibliography rejects missing ids", TestBibliographyRejectsMissingIds()) & vbCrLf
     m_failure = ""
     report = report & TestResult("bibliography leaves empty-data field alone", TestBibliographyEmptyData()) & vbCrLf
+    m_failure = ""
+    report = report & TestResult("style-name change does not refresh", TestNonCitationStyleKeysDoNotRefresh()) & vbCrLf
+    m_failure = ""
+    report = report & TestResult("restyle applies new Word styles", TestRestyleBibliography()) & vbCrLf
     RunTests = report
 End Function
 
@@ -392,6 +396,128 @@ ErrHandler:
     m_failure = "empty-data error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
     EndTestArea startPos
     TestBibliographyEmptyData = False
+End Function
+
+Private Function TestCitationStyle() As Object
+    Dim style As Object
+    Set style = New Dictionary
+    style("id") = "test-style"
+    style("title") = "Test Style"
+    style("citationType") = "intext-citation"
+    Set TestCitationStyle = style
+End Function
+
+' Changing the Word style names must restyle the existing lines locally.
+Private Function TestRestyleBibliography() As Boolean
+    On Error GoTo ErrHandler
+    Dim startPos As Long
+    startPos = BeginTestArea()
+
+    Dim pref As Object
+    Set pref = TestBibliographyPreference()
+    Dim originalTitleStyle As String
+    Dim originalEntryStyle As String
+    originalTitleStyle = DictKeyString(pref, "bibliographyTitleStyle")
+    originalEntryStyle = DictKeyString(pref, "bibliographyEntryStyle")
+
+    Dim lines As Collection
+    Set lines = New Collection
+    lines.Add TestBibliographyLine("style-a", "bibliography-title", "References")
+    lines.Add TestBibliographyLine("style-b", "bibliography-entry", "Entry B")
+    InsertTestBibliography lines, pref
+
+    ' Test-only marker: it gives the restyled range a deterministic end.
+    ' Production separates chapters with chapter-break fields, never plain text.
+    Dim marker As Range
+    Set marker = ActiveDocument.Content.Duplicate
+    marker.Collapse wdCollapseEnd
+    marker.InsertAfter vbCr
+    marker.Collapse wdCollapseEnd
+    marker.InsertAfter "Next chapter"
+    Dim secondStart As Long
+    secondStart = marker.Start
+
+    ' A second block lives in the next chapter and must keep its styles.
+    Dim otherLines As Collection
+    Set otherLines = New Collection
+    otherLines.Add TestBibliographyLine("style-c", "bibliography-title", "References")
+    otherLines.Add TestBibliographyLine("style-d", "bibliography-entry", "Entry D")
+    InsertTestBibliography otherLines, pref
+
+    Dim fields As Collection
+    Set fields = TestBibliographyFields(startPos)
+    Dim ok As Boolean
+    ok = (fields.Count = 4)
+    If Not ok Then m_failure = "field count=" & CStr(fields.Count)
+    If Not ok Then GoTo Finish
+
+    Dim storedBefore As String
+    storedBefore = FieldDataText(fields(1))
+
+    Dim newTitleStyle As String
+    Dim newEntryStyle As String
+    newTitleStyle = "Banyan Test Bibliography Title 2"
+    newEntryStyle = "Banyan Test Bibliography Entry 2"
+    EnsureTestStyle newTitleStyle
+    EnsureTestStyle newEntryStyle
+
+    Dim newPref As Object
+    Set newPref = New Dictionary
+    newPref("bibliographyTitleStyle") = newTitleStyle
+    newPref("bibliographyEntryStyle") = newEntryStyle
+
+    ok = RestyleBibliography(ActiveDocument.Range(startPos, secondStart), newPref)
+    Set fields = TestBibliographyFields(startPos)
+    ok = ok And (fields.Count = 4)
+    If fields.Count = 4 Then
+        ok = ok And (fields(1).Result.Style.NameLocal = newTitleStyle)
+        ok = ok And (fields(2).Result.Style.NameLocal = newEntryStyle)
+        ok = ok And (fields(3).Result.Style.NameLocal = originalTitleStyle)
+        ok = ok And (fields(4).Result.Style.NameLocal = originalEntryStyle)
+        ok = ok And (FieldDataText(fields(1)) = storedBefore)
+        ok = ok And ActiveDocument.Bookmarks.Exists(FieldGetBibliographyBookmarkName("style-b"))
+        If fields(1).Result.Style.NameLocal <> newTitleStyle Then _
+            m_failure = "target title style=" & fields(1).Result.Style.NameLocal
+        If fields(2).Result.Style.NameLocal <> newEntryStyle Then _
+            m_failure = "target entry style=" & fields(2).Result.Style.NameLocal
+        If fields(3).Result.Style.NameLocal <> originalTitleStyle Then _
+            m_failure = "outside title style=" & fields(3).Result.Style.NameLocal
+        If fields(4).Result.Style.NameLocal <> originalEntryStyle Then _
+            m_failure = "outside entry style=" & fields(4).Result.Style.NameLocal
+    End If
+
+Finish:
+    EndTestArea startPos
+    TestRestyleBibliography = ok
+    Exit Function
+
+ErrHandler:
+    m_failure = "restyle error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    EndTestArea startPos
+    TestRestyleBibliography = False
+End Function
+
+' The settings dialog can change the Word style names (bibliographyTitleStyle /
+' bibliographyEntryStyle) without touching the citation style. That is a
+' presentation switch, so RefreshForStyleChange must bail out before any work.
+Private Function TestNonCitationStyleKeysDoNotRefresh() As Boolean
+    On Error GoTo ErrHandler
+
+    Dim before As Object
+    Dim after As Object
+    Set before = TestCitationStyle()
+    Set after = TestCitationStyle()
+    after("bibliographyTitleStyle") = "Some Other Title Style"
+    after("bibliographyEntryStyle") = "Some Other Entry Style"
+
+    ' Only the citation style (id/title/citationType) decides; a different one
+    ' would run the refresh, which tests must not do.
+    TestNonCitationStyleKeysDoNotRefresh = Not RefreshForStyleChange(before, after)
+    Exit Function
+
+ErrHandler:
+    m_failure = "style-change error " & CStr(Err.Number) & " from " & Err.Source & ": " & Err.Description
+    TestNonCitationStyleKeysDoNotRefresh = False
 End Function
 
 Private Function TestBibliographyLine(ByVal id As String, _

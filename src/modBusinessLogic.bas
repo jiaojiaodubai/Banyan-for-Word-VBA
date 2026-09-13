@@ -28,9 +28,14 @@ Public Sub SettingsAction()
     Set dlg = New frmSettings
     Dim previousStyle As Object
     Set previousStyle = CloneStyleForRefresh(pref("style"))
+    Dim previousTitleStyle As String
+    Dim previousEntryStyle As String
+    previousTitleStyle = DictKeyString(pref, "bibliographyTitleStyle")
+    previousEntryStyle = DictKeyString(pref, "bibliographyEntryStyle")
 
     If dlg.EditPreference(pref) Then
         RefreshForStyleChange previousStyle, pref("style")
+        ApplyBibliographyStyleChange previousTitleStyle, previousEntryStyle, pref
     End If
 
     Unload dlg
@@ -85,7 +90,8 @@ Private Sub EnsureBusinessLogicI10n()
         "requestUrl", "请求地址", _
         "port", "端口", _
         "httpError", "HTTP 错误", _
-        "langId", "界面语言"
+        "langId", "界面语言", _
+        "applyingStyles", "正在应用书目样式…"
 
     I10nRegisterTable msoLanguageIDEnglishUS, "settingsAction", _
         "dialogTitle", "Banyan Preferences", _
@@ -94,7 +100,8 @@ Private Sub EnsureBusinessLogicI10n()
         "requestUrl", "Request URL", _
         "port", "Port", _
         "httpError", "HTTP error", _
-        "langId", "UI language"
+        "langId", "UI language", _
+        "applyingStyles", "Applying bibliography styles..."
 
     m_i18nReady = True
 End Sub
@@ -105,6 +112,36 @@ Private Sub ShowSettingsOfflineMessage()
                             "Unable to initialize preferences. Start Zotero and make sure the Banyan plugin is enabled, then try again."), _
                           SettingsActionOfflineText(), _
                           vbExclamation
+End Sub
+
+' Word style names are a local presentation switch: apply them to the existing
+' bibliography lines instead of running a refresh.
+Private Sub ApplyBibliographyStyleChange(ByVal previousTitleStyle As String, _
+                                         ByVal previousEntryStyle As String, _
+                                         ByVal pref As Object)
+    On Error GoTo ErrHandler
+
+    Dim titleStyle As String
+    Dim entryStyle As String
+    titleStyle = DictKeyString(pref, "bibliographyTitleStyle")
+    entryStyle = DictKeyString(pref, "bibliographyEntryStyle")
+    If titleStyle = previousTitleStyle And entryStyle = previousEntryStyle Then Exit Sub
+
+    Dim targetRange As Range
+    Set targetRange = GetUpdateRange()
+    If targetRange Is Nothing Then Exit Sub
+
+    ProgressOpen T("settingsAction.applyingStyles", "Applying bibliography styles...")
+    FieldBeginBatchUpdate
+    RestyleBibliography targetRange, pref
+    FieldEndBatchUpdate
+    ProgressClose
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modBusinessLogic.ApplyBibliographyStyleChange"
+    ProgressClose
+    FieldEndBatchUpdate
 End Sub
 
 Private Function SettingsActionOfflineText() As String

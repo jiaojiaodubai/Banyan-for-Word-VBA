@@ -275,6 +275,40 @@ ErrHandler:
     DiagnosticsReraiseIfDev "modBibliography.DeleteExistingBibliography"
 End Sub
 
+' Re-apply the current bibliography Word styles to the lines in targetRange.
+' Local presentation pass: data, content and bookmarks stay untouched.
+Public Function RestyleBibliography(ByVal targetRange As Range, ByVal pref As Object) As Boolean
+    On Error GoTo ErrHandler
+    If targetRange Is Nothing Or pref Is Nothing Then Exit Function
+
+    Dim titleStyle As String
+    Dim entryStyle As String
+    titleStyle = DictKeyString(pref, "bibliographyTitleStyle")
+    entryStyle = DictKeyString(pref, "bibliographyEntryStyle")
+
+    Dim fld As Field
+    Dim data As Object
+    For Each fld In targetRange.Fields
+        If FieldHasCodeKind(fld, FIELD_KIND_BIBLIOGRAPHY) Then
+            Set data = FieldReadData(fld)
+            If Not data Is Nothing Then
+                If FieldIsBibliographyTitle(data) Then
+                    FieldApplyStyleToField fld, titleStyle, wdStyleTypeParagraph
+                ElseIf FieldIsBibliographyEntry(data) Then
+                    FieldApplyStyleToField fld, entryStyle, wdStyleTypeParagraph
+                End If
+            End If
+        End If
+    Next fld
+
+    RestyleBibliography = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modBibliography.RestyleBibliography"
+    RestyleBibliography = False
+End Function
+
 Private Function CollectBibliographyFieldsInRange(ByVal targetRange As Range) As Collection
     Dim result As Collection
     Set result = New Collection
