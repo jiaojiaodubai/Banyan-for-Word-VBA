@@ -96,7 +96,7 @@ Private Sub cmdOK_Click()
     If Not PreferenceSave(m_pref) Then
         DiagnosticShowMessage Me.Caption, _
                               SettingsText("saveError", "Failed to save preferences."), _
-                              PreferenceGetLastSaveError(), _
+                              "", _
                               vbExclamation
         Exit Sub
     End If
