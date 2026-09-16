@@ -35,8 +35,9 @@ Public Function RunTests() As String
     report = report & TestResult("note refresh same reference (no rebuild)", TestFieldRebuildNoteCitation()) & vbCrLf
     report = report & TestResult("note rebuild on reference change (rich copy)", TestFieldRebuildNoteCitationRefChange()) & vbCrLf
     report = report & TestResult("note renumber via custom refs (rebuild)", TestFieldNoteRenumberRebuild()) & vbCrLf
-    report = report & TestResult("migrate intext -> note", TestFieldMigrateIntextToNotes()) & vbCrLf
-    report = report & TestResult("migrate note -> intext", TestFieldMigrateNotesToIntext()) & vbCrLf
+    report = report & TestResult("migrate intext -> note (mark position)", TestFieldMigrateIntextToNotes()) & vbCrLf
+    report = report & TestResult("migrate intext -> note (codes shown)", TestFieldMigrateIntextToNotesCodesShown()) & vbCrLf
+    report = report & TestResult("migrate note -> intext (mark position)", TestFieldMigrateNotesToIntext()) & vbCrLf
     report = report & TestResult("collectors in range", TestFieldCollectors()) & vbCrLf
     report = report & TestResult("collectors re-key duplicated ids", TestFieldDuplicateCitationIds()) & vbCrLf
     report = report & TestResult("broken citation fields are deleted", TestFieldBrokenCitationFields()) & vbCrLf
@@ -828,47 +829,73 @@ Private Function TestFieldMigrateIntextToNotes() As Boolean
     Set doc = ActiveDocument
     Dim startPos As Long
     startPos = doc.Content.End
+
+    ' Layout: lead text, citation A, trailing text, citation B at the very end.
+    ' The migration must keep each footnote reference AT its citation's spot.
+    ' Recording the removed field's result start (instead of its own start
+    ' position) lands a whole field-code length to the right - inside the
+    ' trailing text - and the bibliography rebuild then deletes the mark.
+    Dim leadText As String
+    leadText = "Migrate I2N "
+    Dim tailText As String
+    tailText = " Tailing text after the first citation, long enough that a stale offset stays inside it."
+
     Dim rng As Range
     Set rng = TestDocEndRange(doc)
-    rng.Text = "Migrate I2N "
-    Dim endPos As Long
-    endPos = doc.Content.End
+    rng.Text = leadText
+
     Set rng = TestDocEndRange(doc)
 
-    Dim data As Object
-    Set data = FieldCreatePlaceholderIntextCitationData("test-mig-i2n")
-    Dim fld As Field
-    Set fld = FieldCreateIntextCitationAtRange(rng, data)
-    If fld Is Nothing Then Exit Function
+    Dim dataA As Object
+    Set dataA = FieldCreatePlaceholderIntextCitationData("test-mig-i2n")
+    Dim fldA As Field
+    Set fldA = FieldCreateIntextCitationAtRange(rng, dataA)
+    If fldA Is Nothing Then Exit Function
+
+    Set rng = TestDocEndRange(doc)
+    rng.InsertAfter tailText
+
+    Set rng = TestDocEndRange(doc)
+    Dim dataB As Object
+    Set dataB = FieldCreatePlaceholderIntextCitationData("test-mig-i2n-end")
+    Dim fldB As Field
+    Set fldB = FieldCreateIntextCitationAtRange(rng, dataB)
+    If fldB Is Nothing Then Exit Function
 
     ' Scope the migration to the test area only
     Dim targetRange As Range
     Set targetRange = doc.Range(startPos, doc.Content.End)
     FieldMigrateIntextCitationsToNotes targetRange
 
-    ' Verify: a footnote carrying our id exists
-    Dim foundNote As Footnote
-    Set foundNote = Nothing
-    Dim note As Footnote
-    Dim nfld As Field
-    Dim ndata As Object
-    For Each note In doc.Footnotes
-        If note.Range.Fields.Count > 0 Then
-            Set nfld = note.Range.Fields(1)
-            Set ndata = FieldReadData(nfld)
-            If Not ndata Is Nothing Then
-                If CStr(ndata("id")) = "test-mig-i2n" Then
-                    Set foundNote = note
-                    Exit For
-                End If
-            End If
-        End If
-    Next note
+    ' Verify: footnotes carrying our ids exist, with their references in place.
+    Dim noteA As Footnote
+    Dim noteB As Footnote
+    TestFieldFindNoteById doc, "test-mig-i2n", noteA
+    TestFieldFindNoteById doc, "test-mig-i2n-end", noteB
 
     Dim ok As Boolean
-    ok = (Not foundNote Is Nothing)
+    ok = (Not noteA Is Nothing) And (Not noteB Is Nothing)
+    If Not noteA Is Nothing Then
+        ' The mark sits exactly between the lead text and the trailing text.
+        ' (The assertions read the text around the mark: live ranges at the
+        ' mark's boundary expand to swallow it, so they cannot be used here.)
+        Dim beforeA As String
+        Dim afterA As String
+        beforeA = doc.Range(noteA.Reference.Start - Len(leadText), noteA.Reference.Start).Text
+        afterA = doc.Range(noteA.Reference.End, noteA.Reference.End + 10).Text
+        ok = ok And (beforeA = leadText)
+        ok = ok And (InStr(1, afterA, "Tailing", vbTextCompare) > 0)
+        FieldRemoveFootnoteSafely noteA
+    End If
+    If Not noteB Is Nothing Then
+        ' The end-of-document citation keeps its mark after the trailing text
+        ' (its removal shrinks the document, which the clamp handles).
+        Dim beforeB As String
+        beforeB = doc.Range(noteB.Reference.Start - 10, noteB.Reference.Start).Text
+        ok = ok And (InStr(1, beforeB, "inside it.", vbTextCompare) > 0)
+        FieldRemoveFootnoteSafely noteB
+    End If
 
-    If Not foundNote Is Nothing Then FieldRemoveFootnoteSafely foundNote
     On Error Resume Next
     doc.Range(startPos, doc.Content.End).Delete
     On Error GoTo 0
@@ -879,6 +906,66 @@ ErrHandler:
     TestFieldMigrateIntextToNotes = False
 End Function
 
+Private Function TestFieldMigrateIntextToNotesCodesShown() As Boolean
+    ' The migration position must not depend on the field-code display state:
+    ' with codes shown the field keeps the same physical positions, so the
+    ' footnote reference still lands on the citation's spot (a position read from
+    ' the RESULT start would be a whole code length off in either state).
+    On Error GoTo ErrHandler
+    If ActiveDocument Is Nothing Then Exit Function
+
+    Dim doc As Document
+    Set doc = ActiveDocument
+    Dim startPos As Long
+    startPos = doc.Content.End
+
+    Dim leadText As String
+    leadText = "Shown I2N "
+
+    Dim rng As Range
+    Set rng = TestDocEndRange(doc)
+    rng.Text = leadText
+
+    Set rng = TestDocEndRange(doc)
+    Dim data As Object
+    Set data = FieldCreatePlaceholderIntextCitationData("test-mig-i2n-shown")
+    Dim fld As Field
+    Set fld = FieldCreateIntextCitationAtRange(rng, data)
+    If fld Is Nothing Then Exit Function
+    fld.ShowCodes = True
+
+    Set rng = TestDocEndRange(doc)
+    rng.InsertAfter " Tailing text after the shown-code citation."
+
+    Dim targetRange As Range
+    Set targetRange = doc.Range(startPos, doc.Content.End)
+    FieldMigrateIntextCitationsToNotes targetRange
+
+    Dim foundNote As Footnote
+    TestFieldFindNoteById doc, "test-mig-i2n-shown", foundNote
+
+    Dim ok As Boolean
+    ok = (Not foundNote Is Nothing)
+    If Not foundNote Is Nothing Then
+        Dim beforeMark As String
+        Dim afterMark As String
+        beforeMark = doc.Range(foundNote.Reference.Start - Len(leadText), foundNote.Reference.Start).Text
+        afterMark = doc.Range(foundNote.Reference.End, foundNote.Reference.End + 10).Text
+        ok = ok And (beforeMark = leadText)
+        ok = ok And (InStr(1, afterMark, "Tailing", vbTextCompare) > 0)
+        FieldRemoveFootnoteSafely foundNote
+    End If
+
+    On Error Resume Next
+    doc.Range(startPos, doc.Content.End).Delete
+    On Error GoTo 0
+    TestFieldMigrateIntextToNotesCodesShown = ok
+    Exit Function
+
+ErrHandler:
+    TestFieldMigrateIntextToNotesCodesShown = False
+End Function
+
 Private Function TestFieldMigrateNotesToIntext() As Boolean
     On Error GoTo ErrHandler
     If ActiveDocument Is Nothing Then Exit Function
@@ -887,11 +974,16 @@ Private Function TestFieldMigrateNotesToIntext() As Boolean
     Set doc = ActiveDocument
     Dim startPos As Long
     startPos = doc.Content.End
+
+    ' Lead text, footnote reference (mid-text), trailing text - the converted
+    ' in-text citation must end up at the reference mark's former spot.
+    Dim leadText As String
+    leadText = "Migrate N2I "
+
     Dim rng As Range
     Set rng = TestDocEndRange(doc)
-    rng.Text = "Migrate N2I "
-    Dim endPos As Long
-    endPos = doc.Content.End
+    rng.Text = leadText
+
     Set rng = TestDocEndRange(doc)
 
     Dim data As Object
@@ -900,11 +992,14 @@ Private Function TestFieldMigrateNotesToIntext() As Boolean
     Set created = FieldCreateNoteCitationAtRange(rng, data)
     If created Is Nothing Then Exit Function
 
+    Set rng = TestDocEndRange(doc)
+    rng.InsertAfter " Tailing text after the footnote reference."
+
     Dim targetRange As Range
     Set targetRange = doc.Range(startPos, doc.Content.End)
     FieldMigrateNoteCitationsToIntext targetRange
 
-    ' Verify: an intext field carrying our id exists
+    ' Verify: an intext field carrying our id exists at the mark's spot.
     Dim foundField As Field
     Set foundField = Nothing
     Dim fld As Field
@@ -913,7 +1008,7 @@ Private Function TestFieldMigrateNotesToIntext() As Boolean
         If fld.Type = wdFieldAddin Then
             Set fdata = FieldReadData(fld)
             If Not fdata Is Nothing Then
-                If CStr(fdata("id")) = "test-mig-n2i" Then
+                If DictKeyString(fdata, "id") = "test-mig-n2i" Then
                     Set foundField = fld
                     Exit For
                 End If
@@ -923,8 +1018,19 @@ Private Function TestFieldMigrateNotesToIntext() As Boolean
 
     Dim ok As Boolean
     ok = (Not foundField Is Nothing)
+    If Not foundField Is Nothing Then
+        ' The converted field stays between the lead and the trailing text.
+        ' (Text windows, not live ranges: ranges at the field's boundary
+        ' expand to swallow the inserted field.)
+        Dim beforeField As String
+        Dim afterField As String
+        beforeField = doc.Range(foundField.Code.Start - Len(leadText) - 2, foundField.Code.Start).Text
+        afterField = doc.Range(foundField.Result.End, foundField.Result.End + 10).Text
+        ok = ok And (InStr(1, beforeField, leadText, vbTextCompare) > 0)
+        ok = ok And (InStr(1, afterField, "Tailing", vbTextCompare) > 0)
+        FieldRemoveFieldSafely foundField
+    End If
 
-    If Not foundField Is Nothing Then FieldRemoveFieldSafely foundField
     On Error Resume Next
     doc.Range(startPos, doc.Content.End).Delete
     On Error GoTo 0
@@ -1520,6 +1626,27 @@ Private Function TestDocEndRange(ByVal doc As Document) As Range
     Set TestDocEndRange = doc.Content.Duplicate
     TestDocEndRange.Collapse wdCollapseEnd
 End Function
+
+Private Sub TestFieldFindNoteById(ByVal doc As Document, _
+                                  ByVal dataId As String, _
+                                  ByRef outNote As Footnote)
+    ' First footnote whose citation field carries the given data id.
+    Dim note As Footnote
+    Dim fld As Field
+    Dim data As Object
+    For Each note In doc.Footnotes
+        If note.Range.Fields.Count > 0 Then
+            Set fld = note.Range.Fields(1)
+            Set data = FieldReadData(fld)
+            If Not data Is Nothing Then
+                If DictKeyString(data, "id") = dataId Then
+                    Set outNote = note
+                    Exit Sub
+                End If
+            End If
+        End If
+    Next note
+End Sub
 
 Private Function TestFieldCodeId(ByVal fld As Field) As String
     Dim kind As String

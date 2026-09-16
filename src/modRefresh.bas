@@ -541,6 +541,9 @@ Private Function ApplyNoteCitationData(ByVal targetNote As Footnote, _
             RefreshLogWarn "Failed to rebuild note citation with id " & citationId & ", skipping."
             Exit Function
         End If
+        ' Rebuilding creates the footnote at the current selection and Word/WPS leave the
+        ' caret inside it; bring it back so the rest of the refresh keeps a main-text anchor.
+        FieldRestoreCaretAfterNote rebuilt("note")
     ElseIf Not FieldWriteData(targetField, updatedData) Then
         ' A source-only change is persisted without touching the field result
         ' or the footnote structure.

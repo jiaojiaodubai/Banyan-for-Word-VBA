@@ -458,6 +458,7 @@ Public Function FieldCreateNoteCitationAtRange(ByVal targetRange As Range, _
     Set fld = FieldCreateRawAddinField(noteRange, FieldCitationCode(DictKeyString(data, "id")))
     FieldWriteData fld, data
     FieldRenderStyledFieldWithData fld, data, DictKeyObject(data, "content")
+    FieldRestoreCaretAfterNote note
 
     Dim result As Collection
     Set result = New Collection
@@ -739,8 +740,14 @@ Private Function RenderStyledFieldCore(ByVal fld As Field, _
     If Not data Is Nothing Then
         If DictHasKey(data, "type") Then
             If DictKeyString(data, "type") = "intext-citation" Then
+                ' A CHARACTER style assignment clears the direct formatting the text
+                ' write just inherited (Word does this itself), so no reset is needed.
                 FieldApplyIntextCitationStyle fld
             ElseIf DictKeyString(data, "type") = "note-citation" Then
+                ' The note citation is styled with the built-in PARAGRAPH style, and a
+                ' paragraph style assignment does NOT clear direct formatting, so the
+                ' inherited formatting (e.g. the red placeholder) is reset explicitly.
+                FieldClearDirectCharacterFormatting fld.Result
                 FieldApplyNoteCitationStyle fld
             End If
         End If
@@ -756,6 +763,36 @@ ErrHandler:
     RenderStyledFieldCore = False
 End Function
 
+' Clear the direct character formatting a field result inherited.
+'
+' Reason: assigning a CHARACTER style clears direct character formatting by itself,
+' but assigning a PARAGRAPH style does not (measured in WPS; Word not compared) - it
+' only touches paragraph-level properties. The bibliography lines (title and entry)
+' and the note citation are styled with paragraph styles only, so without this reset
+' an entry keeps whatever the insertion point or the previous render (e.g. the red
+' "{ BIBLIOGRAPHY }" placeholder) left on the result range. The rich-text marks are
+' applied afterwards and win over the style.
+'
+' Keep in sync with the WPS port: clearDirectCharacterFormatting() in field.ts.
+Private Sub FieldClearDirectCharacterFormatting(ByVal targetRange As Range)
+    On Error GoTo ErrHandler
+
+    Dim f As Font
+    Set f = targetRange.Font
+    f.Color = wdColorAutomatic
+    f.Bold = 0
+    f.Italic = 0
+    f.Subscript = 0
+    f.Superscript = 0
+    f.SmallCaps = 0
+    f.AllCaps = 0
+    targetRange.Shading.BackgroundPatternColor = wdColorAutomatic
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldClearDirectCharacterFormatting"
+End Sub
+
 Public Function FieldRenderStyledFieldWithStyle(ByVal fld As Field, _
                                                 ByVal styleName As String, _
                                                 Optional ByVal styleType As WdStyleType = wdStyleTypeCharacter, _
@@ -768,6 +805,11 @@ Public Function FieldRenderStyledFieldWithStyle(ByVal fld As Field, _
 
     WriteContentTextToRange fld.Result, resolvedContent
     fld.ShowCodes = False
+
+    ' Same reason as in RenderStyledFieldCore: a paragraph style assignment does not
+    ' clear direct formatting, and this entry point is the one used for the
+    ' bibliography lines (paragraph styles).
+    If styleType = wdStyleTypeParagraph Then FieldClearDirectCharacterFormatting fld.Result
 
     FieldApplyStyleToField fld, styleName, styleType
     FieldApplyRichTextStylesToRange fld.Result, resolvedContent
@@ -1026,17 +1068,20 @@ Public Sub FieldMigrateIntextCitationsToNotes(ByVal targetRange As Range)
         Set data = FieldReadData(fld)
         If data Is Nothing Then GoTo NextCitation
 
+        ' Record the field's first position (the code range starts one character
+        ' after the field's begin marker, so Code.Start - 1 is it) BEFORE the
+        ' removal: removing the field deletes the CODE too, so any position inside
+        ' the field is stale afterwards and the footnote reference would land a
+        ' whole code length to the right. A plain number is enough because the loop
+        ' walks the citations BACKWARDS: migrating a later citation never moves an
+        ' earlier one, and removing a field does not move its own start.
         Dim insertPosition As Long
-        insertPosition = fld.Result.Start
+        insertPosition = fld.Code.Start - 1
 
         Dim convertedData As Object
         Set convertedData = FieldCreatePlaceholderNoteCitationData(CStr(fd("id")), DictKeyObject(data, "source"))
 
         FieldRemoveFieldSafely fld
-
-        ' Removing the field can shrink the document when it is the last content,
-        ' leaving the captured position out of range (error 4608). Clamp it.
-        insertPosition = ClampInsertPosition(insertPosition)
 
         Dim insertRange As Range
         Set insertRange = ActiveDocument.Range(insertPosition, insertPosition)
@@ -1066,6 +1111,9 @@ Public Sub FieldMigrateNoteCitationsToIntext(ByVal targetRange As Range)
         Set data = FieldReadData(fd("field"))
         If data Is Nothing Then GoTo NextNote
 
+        ' No live anchor is needed in this direction: the reference mark holds a
+        ' single character, so its own start does not move when the note is
+        ' removed (only the text after the mark shifts left).
         Dim insertPosition As Long
         insertPosition = note.Reference.Start
 
@@ -1220,6 +1268,31 @@ Public Sub FieldRemoveFootnoteSafely(ByVal note As Footnote)
     On Error Resume Next
     If Not note Is Nothing Then note.Delete
     On Error GoTo 0
+End Sub
+
+' Put the caret back in the MAIN TEXT right after a footnote reference.
+'
+' Both hosts move the insertion point INTO the new footnote when the insertion point
+' sits at the insertion position (the normal "insert a citation at the cursor" flow;
+' WPS does it unconditionally, Word when the caret is at the insertion position).
+' The parked caret then breaks the next action: Footnotes.Add with a selection-derived
+' range raises "footnotes can only be added to the main body of the document", and
+' Selection.GoTo cannot escape a footnote story in Word. Selecting the end of the
+' reference mark puts the caret back into the main text in both hosts.
+'
+' Keep in sync with the WPS port: restoreMainTextAfterNote() in field.ts.
+Public Sub FieldRestoreCaretAfterNote(ByVal note As Footnote)
+    On Error GoTo ErrHandler
+    If note Is Nothing Then Exit Sub
+
+    Dim caret As Range
+    Set caret = note.Reference.Duplicate
+    caret.Collapse wdCollapseEnd
+    caret.Select
+    Exit Sub
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modField.FieldRestoreCaretAfterNote"
 End Sub
 
 Public Sub FieldRemoveEndnoteSafely(ByVal note As Endnote)

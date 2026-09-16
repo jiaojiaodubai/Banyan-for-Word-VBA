@@ -261,11 +261,14 @@ End Function
 
 Private Sub EnsureCaretInMainText()
     If Selection.StoryType <> wdMainTextStory Then
+        ' ActiveDocument.GoTo always navigates the MAIN TEXT, while Selection.GoTo is
+        ' story-scoped in Word: called from a footnote story it returns a range of THAT
+        ' story, so the caret would stay in the footnote (verified in Word and WPS).
         On Error Resume Next
         Dim currentPage As Long
         currentPage = Selection.Information(wdActiveEndPageNumber)
         Dim pageRange As Range
-        Set pageRange = Selection.GoTo(wdGoToPage, wdGoToAbsolute, currentPage)
+        Set pageRange = ActiveDocument.GoTo(wdGoToPage, wdGoToAbsolute, currentPage)
         pageRange.Collapse wdCollapseEnd
         pageRange.Select
         On Error GoTo 0
