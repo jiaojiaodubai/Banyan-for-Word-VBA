@@ -1206,6 +1206,39 @@ ErrHandler:
     Set BuildCitationResponseIndex = Nothing
 End Function
 
+Private Function SameStyleOptions(ByVal previousStyle As Object, ByVal nextStyle As Object) As Boolean
+    On Error GoTo ErrHandler
+
+    Dim hasPrevious As Boolean
+    Dim hasNext As Boolean
+    hasPrevious = DictKeyIsObject(previousStyle, "options")
+    hasNext = DictKeyIsObject(nextStyle, "options")
+    If Not hasPrevious And Not hasNext Then
+        SameStyleOptions = True
+        Exit Function
+    End If
+    If hasPrevious <> hasNext Then Exit Function
+
+    Dim previousOptions As Object
+    Dim nextOptions As Object
+    Set previousOptions = DictKeyObject(previousStyle, "options")
+    Set nextOptions = DictKeyObject(nextStyle, "options")
+    If previousOptions.Count <> nextOptions.Count Then Exit Function
+
+    Dim key As Variant
+    For Each key In previousOptions.Keys
+        If Not nextOptions.Exists(CStr(key)) Then Exit Function
+        If CStr(previousOptions(key)) <> CStr(nextOptions(key)) Then Exit Function
+    Next key
+
+    SameStyleOptions = True
+    Exit Function
+
+ErrHandler:
+    DiagnosticsReraiseIfDev "modRefresh.SameStyleOptions"
+    SameStyleOptions = False
+End Function
+
 Private Function SameStyle(ByVal previousStyle As Object, ByVal nextStyle As Object) As Boolean
     On Error GoTo ErrHandler
     If previousStyle Is Nothing Then Exit Function
@@ -1213,7 +1246,8 @@ Private Function SameStyle(ByVal previousStyle As Object, ByVal nextStyle As Obj
 
     SameStyle = (DictKeyString(previousStyle, "id") = DictKeyString(nextStyle, "id") And _
                  DictKeyString(previousStyle, "title") = DictKeyString(nextStyle, "title") And _
-                 DictKeyString(previousStyle, "citationType") = DictKeyString(nextStyle, "citationType"))
+                 DictKeyString(previousStyle, "citationType") = DictKeyString(nextStyle, "citationType") And _
+                 SameStyleOptions(previousStyle, nextStyle))
     Exit Function
 
 ErrHandler:

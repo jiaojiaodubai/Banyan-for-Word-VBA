@@ -17,6 +17,7 @@ Public Function RunTests() As String
     report = "testPreference" & vbCrLf & String(40, "-") & vbCrLf
     report = report & TestResult("PreferenceGet", TestPrefGet()) & vbCrLf
     report = report & TestResult("PreferenceSave round-trip", TestPrefSave()) & vbCrLf
+    report = report & TestResult("style options round-trip", TestPrefStyleOptions()) & vbCrLf
     report = report & TestResult("Preference structure readable", TestPrefDisplay()) & vbCrLf
     ' Informational summary (not tallied) - replaces the old MessageBox so the
     ' COM automation flow in Run-Tests.ps1 never blocks on a dialog.
@@ -86,6 +87,37 @@ Private Function TestPrefSave() As Boolean
     PreferenceSave pref
 
     TestPrefSave = restored
+End Function
+
+Private Function TestPrefStyleOptions() As Boolean
+    ' style.options must survive PreferenceSave / PreferenceGet, including for
+    ' documents that had no options key before this version.
+    On Error Resume Next
+
+    Dim pref As Object
+    Set pref = PreferenceGet()
+    If pref Is Nothing Then
+        Set pref = CreateFreshPreference()
+        If Not PreferenceSave(pref) Then Exit Function
+        Set pref = PreferenceGet()
+    End If
+    If pref Is Nothing Then Exit Function
+
+    Dim style As Object
+    Set style = DictKeyObject(pref, "style")
+    If style Is Nothing Then Exit Function
+
+    Set style("options") = New Dictionary
+    style("options")("mode") = "full"
+    If Not PreferenceSave(pref) Then Exit Function
+
+    Dim reloaded As Object
+    Set reloaded = PreferenceGet()
+    If reloaded Is Nothing Then Exit Function
+
+    Dim options As Object
+    Set options = DictKeyObject(DictKeyObject(reloaded, "style"), "options")
+    TestPrefStyleOptions = (DictKeyString(options, "mode") = "full")
 End Function
 
 Private Function TestPrefDisplay() As Boolean

@@ -149,6 +149,10 @@ Private Function CloneStyle(ByVal source As Variant) As Object
     result("id") = DictKeyString(source, "id")
     result("title") = DictKeyString(source, "title")
     result("citationType") = DictKeyString(source, "citationType")
+    ' The style dialog returns the confirmed options; persist them with the style.
+    If DictKeyIsObject(source, "options") Then
+        Set result("options") = DictKeyObject(source, "options")
+    End If
     Set CloneStyle = result
 End Function
 

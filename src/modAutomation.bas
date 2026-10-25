@@ -12,11 +12,13 @@ Option Explicit
 '   public function returns False/Nothing/"" on failure and never shows a
 '   dialog.
 '
-'   Item dict shape built here (a subset of the backend's Banyan item):
-'     { id, key, itemType, uri, title, date, year, firstCreator, language,
+'   Item dict shape built here (a subset of the backend's Banyan item, plus
+'   the automation-only `key`):
+'     { id, key, itemType, "z:uri", title, date, year, firstCreator, language,
 '       creators, tags, extra }
-'   `id` is always 0 (the local API exposes no numeric id); the backend
-'   resolves the item by uri when syncItems=True, so a partial snapshot works.
+'   `id` is always "0" (the local API exposes no numeric id); the backend
+'   resolves the item by the `z:uri` reference when syncItems=True, so a
+'   partial snapshot works.
 '
 ' Public API:
 '   AutomationStyleList() As Collection
@@ -52,7 +54,11 @@ Private m_snapshotByKey As Object
 ' --- Styles -----------------------------------------------------------------
 
 ' --- AutomationStyleList - Fetch the Banyan style list (no GUI route). ---
-' POST /banyan/style/list -> { ok, data: [ { id, title, citationType, ... } ] }
+' POST /banyan/style/list -> { ok, data: [ { id, title, citationType,
+'   description, optionParams: [ { id, kind, label, description?, defaultValue,
+'   states?, presets?, format?, hasApplicable?, hasForcedValue?, hasValidate? } ] } ] }
+' optionParams is the style's declared parameter schema (not a resolved value
+' map), so an agent can see what a style allows without calling the GUI.
 Public Function AutomationStyleList() As Collection
     On Error GoTo ErrHandler
 
@@ -95,7 +101,8 @@ Public Function AutomationStyleApply(ByVal styleId As String, _
     If pref Is Nothing Then Set pref = New Dictionary
     Set pref("style") = GetPrefStyle(DictKeyString(style, "id"), _
                                      DictKeyString(style, "title"), _
-                                     DictKeyString(style, "citationType"))
+                                     DictKeyString(style, "citationType"), _
+                                     BuildDefaultStyleOptions(style))
 
     AutomationStyleApply = PreferenceSave(pref)
     Exit Function
@@ -127,6 +134,34 @@ ErrHandler:
     AutomationPreferenceStyleId = ""
 End Function
 
+
+' Build the declared defaults ({ id: defaultValue }) from an optionParams array.
+' No new automation parameter: a style chosen without GUI configuration keeps
+' exactly the same defaults the GUI would start from.
+Private Function BuildDefaultStyleOptions(ByVal style As Object) As Object
+    Dim result As Object
+    Set result = New Dictionary
+
+    If Not DictKeyIsCollection(style, "optionParams") Then
+        Set BuildDefaultStyleOptions = result
+        Exit Function
+    End If
+
+    Dim controls As Collection
+    Set controls = DictKeyObject(style, "optionParams")
+    Dim control As Variant
+    For Each control In controls
+        Dim controlId As String
+        controlId = DictKeyString(control, "id")
+        If Len(controlId) > 0 Then
+            If DictKeyIsScalar(control, "defaultValue") Then
+                result(controlId) = DictKeyValue(control, "defaultValue")
+            End If
+        End If
+    Next control
+
+    Set BuildDefaultStyleOptions = result
+End Function
 
 Private Function FindStyleInList(ByVal styles As Collection, _
                                  ByVal styleId As String, _
@@ -464,10 +499,10 @@ Private Function BanyanItemFromApiRecord(ByVal record As Variant) As Object
 
     Dim item As Object
     Set item = New Dictionary
-    item("id") = 0
+    item("id") = "0"
     item("key") = itemKey
     item("itemType") = itemType
-    item("uri") = itemUri
+    item("z:uri") = itemUri
     item("title") = DictKeyString(data, "title")
     item("date") = DictKeyString(data, "date")
     item("language") = DictKeyString(data, "language")

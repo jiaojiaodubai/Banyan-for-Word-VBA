@@ -165,5 +165,9 @@ Private Function CloneStyleForRefresh(ByVal source As Variant) As Object
     result("id") = DictKeyString(source, "id")
     result("title") = DictKeyString(source, "title")
     result("citationType") = DictKeyString(source, "citationType")
+    ' Keep the stored options so a style-option-only change is detected.
+    If DictKeyIsObject(source, "options") Then
+        Set result("options") = DictKeyObject(source, "options")
+    End If
     Set CloneStyleForRefresh = result
 End Function

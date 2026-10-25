@@ -13,7 +13,7 @@ Option Explicit
 ' Public types (all Dictionary-based):
 '   Preference        - { syncItems, refreshAll, style, extraSource,
 '                         bibliographyTitleStyle, bibliographyEntryStyle }
-'   PrefStyle         - { id, title, citationType }
+'   PrefStyle         - { id, title, citationType, options? }
 '   CitationSource    - Dictionary
 '
 ' Public API:
@@ -112,12 +112,20 @@ End Sub
 
 Public Function GetPrefStyle(ByVal styleId As String, _
                              ByVal styleTitle As String, _
-                             ByVal citationType As String) As Object
+                             ByVal citationType As String, _
+                             Optional ByVal options As Variant) As Object
     Dim d As Object
     Set d = New Dictionary
     d("id") = styleId
     d("title") = styleTitle
     d("citationType") = citationType
+    If Not IsMissing(options) Then
+        If IsObject(options) Then
+            If Not options Is Nothing Then
+                Set d("options") = options
+            End If
+        End If
+    End If
     Set GetPrefStyle = d
 End Function
 
@@ -236,7 +244,7 @@ Private Function CreatePreference() As Object
     Set pref = New Dictionary
     pref("syncItems") = True
     pref("refreshAll") = True
-    Set pref("style") = GetPrefStyle(DictKeyString(style, "id"), DictKeyString(style, "title"), DictKeyString(style, "citationType"))
+    Set pref("style") = GetPrefStyle(DictKeyString(style, "id"), DictKeyString(style, "title"), DictKeyString(style, "citationType"), DictKeyObject(style, "options"))
     pref("extraSource") = Null
     pref("bibliographyTitleStyle") = DefaultBibTitleStyle()
     pref("bibliographyEntryStyle") = DefaultBibEntryStyle()
@@ -278,6 +286,14 @@ Private Function FetchStyleFromBackend(Optional ByVal currentStyle As Variant) A
         End If
         If Len(stTitle) > 0 Then
             body = body & ",""title"":""" & EscapeJson(stTitle) & """"
+        End If
+        ' Send the stored option values so the dialog can echo them.
+        If DictKeyIsObject(currentStyle, "options") Then
+            Dim optionsJson As String
+            optionsJson = JsonStringify(DictKeyObject(currentStyle, "options"))
+            If Len(optionsJson) > 0 Then
+                body = body & ",""options"":" & optionsJson
+            End If
         End If
     End If
     body = body & "}"
@@ -445,6 +461,15 @@ Private Function NormalizePreference(ByVal pref As Object) As Boolean
     If Not DictKeyObject(pref, "style").Exists("id") Then GoTo InvalidPreference
     If Not pref("style").Exists("title") Then GoTo InvalidPreference
     If Not pref("style").Exists("citationType") Then GoTo InvalidPreference
+
+    ' Documents written before style options existed have no `options` key.
+    Dim styleObj As Object
+    Set styleObj = DictKeyObject(pref, "style")
+    If Not styleObj.Exists("options") Then
+        Set styleObj("options") = New Dictionary
+    ElseIf Not DictKeyIsObject(styleObj, "options") Then
+        Set styleObj("options") = New Dictionary
+    End If
 
     If Not pref.Exists("extraSource") Then pref("extraSource") = Null
     If Not pref.Exists("bibliographyTitleStyle") Then pref("bibliographyTitleStyle") = DefaultBibTitleStyle()

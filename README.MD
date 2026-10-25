@@ -222,7 +222,10 @@ Other dev commands:
 `AutomationStyleList` / `AutomationStyleApply` / `AutomationPreferenceStyleId` (styles),
 `AutomationItemsSnapshot` / `AutomationItem*` / `AutomationCitationSource` (items),
 `AutomationInsertPendingCitation*` / `AutomationInsertPendingBibliography` / `AutomationRefresh`
-(pending fields and refresh). The module header documents the API and the two GUI routes it avoids;
+(pending fields and refresh). Style entries include `description` and `optionParams`
+(the declared parameter schema with kinds, labels, defaults, states and presets — not a
+resolved value map); `AutomationStyleApply` starts from those declared `defaultValue`s,
+with no extra parameter. The module header documents the API and the two GUI routes it avoids;
 every function returns `False`/`Nothing`/`""` instead of showing a dialog.
 
 #### Dictionary safety (`modDict`)

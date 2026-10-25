@@ -415,6 +415,10 @@ Public Function FieldAsStyleIdentifier(ByVal style As Object) As Object
     ' Read via modDict (safe accessor, see README "Dictionary safety").
     d("id") = DictKeyString(style, "id")
     d("title") = DictKeyString(style, "title")
+    ' Stored document-wide options travel with every render request.
+    If DictKeyIsObject(style, "options") Then
+        Set d("options") = DictKeyObject(style, "options")
+    End If
     Set FieldAsStyleIdentifier = d
 End Function
 

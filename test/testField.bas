@@ -1538,6 +1538,8 @@ Private Function TestFieldStyleIdentifier() As Boolean
 
     Dim style As Object
     Set style = GetPrefStyle("the-journal-of-international-studies", "国际政治研究", "note-citation")
+    Set style("options") = New Dictionary
+    style("options")("mode") = "full"
     Dim ident As Object
     Set ident = FieldAsStyleIdentifier(style)
 
@@ -1546,6 +1548,8 @@ Private Function TestFieldStyleIdentifier() As Boolean
     ok = ok And (CStr(ident("id")) = "the-journal-of-international-studies")
     ok = ok And ident.Exists("title")
     ok = ok And (CStr(ident("title")) = "国际政治研究")
+    ok = ok And DictKeyIsObject(ident, "options")
+    ok = ok And (DictKeyString(DictKeyObject(ident, "options"), "mode") = "full")
 
     TestFieldStyleIdentifier = ok
     Exit Function
